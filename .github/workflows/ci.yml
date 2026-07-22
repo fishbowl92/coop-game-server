@@ -1,0 +1,41 @@
+# CI(Continuous Integration, 지속적 통합): GitHub에 push 또는 Pull Request가 올라올 때
+# 새 환경에서 복원·빌드·테스트를 자동으로 수행합니다.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# 작업 흐름은 저장소 내용을 읽기만 하면 됩니다.
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: Restore, Build, and Test
+    runs-on: ubuntu-latest
+
+    steps:
+      # GitHub 실행 환경으로 현재 저장소 코드를 가져옵니다.
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      # 프로젝트가 사용하는 .NET 10 SDK를 설치합니다.
+      - name: Set up .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      # NuGet(닷넷 패키지 관리자) 의존성을 내려받습니다.
+      - name: Restore dependencies
+        run: dotnet restore CoopGameServer.slnx
+
+      # 복원된 의존성을 사용해 Release(배포용 최적화) 구성으로 컴파일합니다.
+      - name: Build solution
+        run: dotnet build CoopGameServer.slnx --configuration Release --no-restore
+
+      # 빌드 결과를 다시 빌드하지 않고 xUnit 테스트를 실행합니다.
+      - name: Run tests
+        run: dotnet test CoopGameServer.slnx --configuration Release --no-build

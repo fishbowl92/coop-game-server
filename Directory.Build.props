@@ -1,0 +1,11 @@
+<Project>
+  <!-- 이 파일의 설정은 하위 모든 C# 프로젝트에 공통 적용됩니다. -->
+  <PropertyGroup>
+    <!-- null(값 없음) 가능성을 컴파일러가 추적하도록 합니다. -->
+    <Nullable>enable</Nullable>
+    <!-- 자주 쓰는 기본 네임스페이스를 자동으로 using 하게 합니다. -->
+    <ImplicitUsings>enable</ImplicitUsings>
+    <!-- .NET SDK가 제공하는 권장 코드 분석 규칙을 사용합니다. -->
+    <AnalysisLevel>latest-recommended</AnalysisLevel>
+  </PropertyGroup>
+</Project>
