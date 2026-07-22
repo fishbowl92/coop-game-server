@@ -1,3 +1,9 @@
 <Solution>
-  <Project Path="CoopGameServer/CoopGameServer.csproj" />
+  <Folder Name="/src/">
+    <Project Path="src/CoopGameServer.Api/CoopGameServer.Api.csproj" />
+    <Project Path="src/CoopGameServer.Shared/CoopGameServer.Shared.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/CoopGameServer.UnitTests/CoopGameServer.UnitTests.csproj" />
+  </Folder>
 </Solution>
