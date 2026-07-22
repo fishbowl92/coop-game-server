@@ -14,7 +14,7 @@ trim_trailing_whitespace = true
 # C# 코드에서 System 네임스페이스 using을 먼저 정렬합니다.
 dotnet_sort_system_directives_first = true
 
-# 파일 범위 namespace를 권장합니다. 예: namespace CoopGameServer.Shared;
+# 파일 범위 namespace를 권장합니다. 예: namespace CoopGameServer.Contracts;
 csharp_style_namespace_declarations = file_scoped:suggestion
 
 # 사용하지 않는 using은 빌드 중 경고로 알려 줍니다.

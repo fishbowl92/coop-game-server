@@ -19,7 +19,8 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\src\CoopGameServer.Shared\CoopGameServer.Shared.csproj" />
+    <!-- 테스트는 실제 서버와 같은 Contracts 형식을 사용해 프로젝트 연결을 검증합니다. -->
+    <ProjectReference Include="..\..\src\CoopGameServer.Contracts\CoopGameServer.Contracts.csproj" />
   </ItemGroup>
 
 </Project>

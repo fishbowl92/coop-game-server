@@ -16,9 +16,11 @@
 
 ```text
 CoopGameServer/
-├── CoopGameServer/  # 현재 ASP.NET Core API 프로젝트
-├── src/             # 이후 API, Silo, Shared 등 실행 코드 프로젝트
-├── tests/           # 단위 테스트와 통합 테스트
+├── src/
+│   ├── CoopGameServer.Api/        # ASP.NET Core API 프로젝트
+│   └── CoopGameServer.Contracts/  # 프로젝트 간 요청·응답 형식과 인터페이스 약속
+├── tests/
+│   └── CoopGameServer.UnitTests/  # xUnit 단위 테스트
 ├── docs/            # 설계 문서와 복습 자료
 ├── deploy/          # 배포 관련 설정
 ├── tools/           # 데이터 검증 등 개발 보조 도구
@@ -57,7 +59,7 @@ CoopGameServer/
 4. API 프로젝트를 실행합니다.
 
    ```powershell
-   dotnet run --project .\CoopGameServer\CoopGameServer.csproj
+   dotnet run --project .\src\CoopGameServer.Api\CoopGameServer.Api.csproj
    ```
 
    `--project`는 실행할 C# 프로젝트 파일을 직접 지정하는 옵션입니다.
@@ -70,15 +72,15 @@ CoopGameServer/
 ## 검증 명령
 
 ```powershell
-dotnet build
-dotnet test
+dotnet build CoopGameServer.slnx
+dotnet test CoopGameServer.slnx
 git status
 ```
 
-- `dotnet build`: 코드를 컴파일하고 패키지·설정 오류를 확인합니다.
-- `dotnet test`: 자동 테스트를 실행합니다. 현재는 테스트 프로젝트를 추가하는 단계입니다.
+- `dotnet build CoopGameServer.slnx`: 솔루션에 포함된 모든 프로젝트를 컴파일하고 패키지·설정 오류를 확인합니다.
+- `dotnet test CoopGameServer.slnx`: xUnit 단위 테스트 프로젝트의 자동 테스트를 실행합니다.
 - `git status`: 커밋할 파일과 실수로 포함된 비밀 파일이 없는지 확인합니다.
 
 ## 다음 목표
 
-0주차에는 API, Shared, UnitTests 프로젝트 분리와 CI(Continuous Integration, 지속적 통합) 자동 빌드·테스트를 구성합니다. 이후 Player 데이터 모델과 PostgreSQL 영속성 구현을 시작합니다.
+0주차에는 API, Contracts, UnitTests 프로젝트 분리와 CI(Continuous Integration, 지속적 통합) 자동 빌드·테스트를 구성합니다. 이후 Player 데이터 모델과 PostgreSQL 영속성 구현을 시작합니다.

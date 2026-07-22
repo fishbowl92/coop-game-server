@@ -17,7 +17,8 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\CoopGameServer.Shared\CoopGameServer.Shared.csproj" />
+    <!-- API는 프로젝트 사이의 요청·응답 약속을 담은 Contracts 프로젝트를 참조합니다. -->
+    <ProjectReference Include="..\CoopGameServer.Contracts\CoopGameServer.Contracts.csproj" />
   </ItemGroup>
 
 </Project>

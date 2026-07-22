@@ -1,7 +1,7 @@
 <Solution>
   <Folder Name="/src/">
     <Project Path="src/CoopGameServer.Api/CoopGameServer.Api.csproj" />
-    <Project Path="src/CoopGameServer.Shared/CoopGameServer.Shared.csproj" />
+    <Project Path="src/CoopGameServer.Contracts/CoopGameServer.Contracts.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/CoopGameServer.UnitTests/CoopGameServer.UnitTests.csproj" />
