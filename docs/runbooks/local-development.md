@@ -16,6 +16,18 @@ docker compose up -d
 
 이 명령은 `compose.yaml`을 읽어 PostgreSQL과 Redis 컨테이너를 생성하거나 다시 시작합니다. `-d`는 detached mode(디태치드 모드)로, 명령이 끝난 뒤에도 컨테이너가 백그라운드에서 실행되게 합니다.
 
+## 시작 절차 자동화 도구
+
+반복되는 시작 절차는 아래 도구로 한 번에 실행할 수 있습니다.
+
+```powershell
+.\tools\Start-LocalEnvironment.ps1
+```
+
+이 스크립트는 Docker Desktop 연결 확인 → `docker compose up -d` → 서비스가 `healthy` 상태가 될 때까지 대기 → `docker compose ps` → `git status` 순서로 실행합니다.
+
+PowerShell 창을 직접 열지 않고 실행 결과를 보고 싶으면 `tools/Start-LocalEnvironment.cmd` 파일을 더블클릭할 수 있습니다. Docker Desktop 자체는 먼저 실행되어 있어야 합니다.
+
 ## 상태 확인
 
 ```powershell
@@ -55,7 +67,7 @@ docker compose down -v
 ## API 실행
 
 ```powershell
-dotnet run --project .\CoopGameServer\CoopGameServer.csproj
+dotnet run --project .\src\CoopGameServer.Api\CoopGameServer.Api.csproj
 ```
 
-ASP.NET Core API를 실행합니다. 현재 프로젝트 최상위 폴더에는 솔루션 파일만 있으므로 `--project` 옵션으로 실제 C# 프로젝트 파일을 지정합니다.
+ASP.NET Core API를 실행합니다. 프로젝트 최상위 폴더에는 솔루션 파일만 있으므로 `--project` 옵션으로 실제 C# 프로젝트 파일을 지정합니다.
