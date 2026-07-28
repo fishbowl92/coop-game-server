@@ -19,6 +19,9 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Player 엔티티의 실제 게임 규칙을 검증하기 위해 API 프로젝트를 참조합니다. -->
+    <ProjectReference Include="..\..\src\CoopGameServer.Api\CoopGameServer.Api.csproj" />
+
     <!-- 테스트는 실제 서버와 같은 Contracts 형식을 사용해 프로젝트 연결을 검증합니다. -->
     <ProjectReference Include="..\..\src\CoopGameServer.Contracts\CoopGameServer.Contracts.csproj" />
   </ItemGroup>
