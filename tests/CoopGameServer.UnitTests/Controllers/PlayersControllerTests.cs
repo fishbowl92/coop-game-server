@@ -19,6 +19,9 @@ public sealed class PlayersControllerTests
             .UseInMemoryDatabase(databaseName: Guid.NewGuid().ToString())
             .Options;
 
+        // InMemory 제공자는 PostgreSQL의 UNIQUE 인덱스와 같은 관계형 DB 제약 조건을 완전히 재현하지 않습니다.
+        // 따라서 중복 닉네임의 409 검증은 실제 PostgreSQL을 사용하는 통합 테스트에서 별도로 다룹니다.
+
         await using var gameDbContext = new GameDbContext(options);
         var controller = new PlayersController(gameDbContext);
 

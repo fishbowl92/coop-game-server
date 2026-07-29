@@ -79,6 +79,7 @@ public sealed class PlayersController : ControllerBase
 
         var response = ToResponse(player);
 
+        // 201 Created 응답에는 새 리소스를 다시 조회할 수 있는 Location 헤더를 함께 제공합니다.
         return CreatedAtAction(nameof(GetPlayerById), new { playerId = player.Id }, response);
     }
 
@@ -95,6 +96,8 @@ public sealed class PlayersController : ControllerBase
         Guid playerId,
         CancellationToken cancellationToken)
     {
+        // 조회 결과를 수정하지 않으므로 Change Tracker가 객체 상태를 관리할 필요가 없습니다.
+        // AsNoTracking은 이 읽기 전용 경로의 메모리 사용량과 추적 비용을 줄입니다.
         var player = await _gameDbContext.Players
             .AsNoTracking()
             .SingleOrDefaultAsync(entity => entity.Id == playerId, cancellationToken);
