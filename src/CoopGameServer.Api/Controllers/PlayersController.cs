@@ -106,6 +106,72 @@ public sealed class PlayersController : ControllerBase
     }
 
     /// <summary>
+    /// 기존 플레이어의 닉네임을 변경하고 수정 시각을 갱신합니다.
+    /// </summary>
+    /// <param name="playerId">변경할 플레이어의 Guid 식별자입니다.</param>
+    /// <param name="request">새 닉네임을 담은 요청입니다.</param>
+    /// <param name="cancellationToken">클라이언트 연결이 끊길 때 DB 작업을 취소하기 위한 토큰입니다.</param>
+    /// <returns>
+    /// 성공 시 200 OK와 수정된 플레이어 정보를 반환합니다.
+    /// 플레이어가 없으면 404, 닉네임 규칙 위반이면 400, 중복 닉네임이면 409를 반환합니다.
+    /// </returns>
+    [HttpPatch("{playerId:guid}/nickname")]
+    [ProducesResponseType(typeof(PlayerResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
+    public async Task<ActionResult<PlayerResponse>> UpdatePlayerNickname(
+        Guid playerId,
+        [FromBody] UpdatePlayerNicknameRequest request,
+        CancellationToken cancellationToken)
+    {
+        // 변경 작업에서는 EF Core가 Player 상태를 추적해야 SaveChangesAsync가 UPDATE SQL을 생성할 수 있습니다.
+        // 따라서 단순 조회 API와 달리 AsNoTracking을 사용하지 않습니다.
+        var player = await _gameDbContext.Players
+            .SingleOrDefaultAsync(entity => entity.Id == playerId, cancellationToken);
+
+        if (player is null)
+        {
+            return NotFound();
+        }
+
+        try
+        {
+            // Player가 공백 제거·길이 제한·수정 시각 갱신 규칙을 한 곳에서 책임집니다.
+            player.Rename(request.Nickname!, DateTimeOffset.UtcNow);
+        }
+        catch (ArgumentNullException exception)
+        {
+            return ValidationProblem(
+                detail: exception.Message,
+                statusCode: StatusCodes.Status400BadRequest);
+        }
+        catch (ArgumentException exception)
+        {
+            return ValidationProblem(
+                detail: exception.Message,
+                statusCode: StatusCodes.Status400BadRequest);
+        }
+
+        try
+        {
+            await _gameDbContext.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateException exception) when (IsDuplicateNickname(exception))
+        {
+            // 데이터베이스 UNIQUE 인덱스가 최종적으로 막은 동시 중복 변경을 HTTP 409로 표현합니다.
+            return Conflict(new ProblemDetails
+            {
+                Title = "Nickname already exists.",
+                Detail = "이미 사용 중인 닉네임입니다.",
+                Status = StatusCodes.Status409Conflict,
+            });
+        }
+
+        return Ok(ToResponse(player));
+    }
+
+    /// <summary>
     /// PostgreSQL이 닉네임 UNIQUE 인덱스 위반으로 반환한 오류인지 판별합니다.
     /// </summary>
     private static bool IsDuplicateNickname(DbUpdateException exception)
