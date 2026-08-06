@@ -1,4 +1,7 @@
+using CoopGameServer.Api.Domain.Inventories;
 using CoopGameServer.Api.Domain.Players;
+using CoopGameServer.Api.Domain.Rewards;
+using CoopGameServer.Api.Domain.Wallets;
 using Microsoft.EntityFrameworkCore;
 
 namespace CoopGameServer.Api.Data;
@@ -26,6 +29,21 @@ public sealed class GameDbContext : DbContext
     /// LINQ 질의와 추가·수정·삭제의 시작점으로 사용합니다.
     /// </summary>
     public DbSet<Player> Players => Set<Player>();
+
+    /// <summary>
+    /// player_wallets 테이블에 대응하는 플레이어 지갑 집합입니다.
+    /// </summary>
+    public DbSet<PlayerWallet> PlayerWallets => Set<PlayerWallet>();
+
+    /// <summary>
+    /// inventories 테이블에 대응하는 플레이어별 아이템 보유 정보 집합입니다.
+    /// </summary>
+    public DbSet<InventoryItem> InventoryItems => Set<InventoryItem>();
+
+    /// <summary>
+    /// reward_audits 테이블에 대응하는 보상 지급 이력 집합입니다.
+    /// </summary>
+    public DbSet<RewardAudit> RewardAudits => Set<RewardAudit>();
 
     /// <summary>
     /// C# Player 객체와 PostgreSQL players 테이블 사이의 세부 규칙을 정의합니다.
@@ -66,5 +84,106 @@ public sealed class GameDbContext : DbContext
             .HasColumnName("updated_at")
             .HasColumnType("timestamp with time zone")
             .IsRequired();
+
+        var playerWallet = modelBuilder.Entity<PlayerWallet>();
+
+        // 플레이어 한 명당 지갑은 하나이므로 player_id 자체를 기본 키로 사용합니다.
+        playerWallet.ToTable(
+            "player_wallets",
+            table => table.HasCheckConstraint("CK_player_wallets_gold_nonnegative", "gold >= 0"));
+        playerWallet.HasKey(entity => entity.PlayerId);
+        playerWallet.Property(entity => entity.PlayerId)
+            .HasColumnName("player_id")
+            .ValueGeneratedNever();
+        playerWallet.Property(entity => entity.Gold)
+            .HasColumnName("gold")
+            .HasColumnType("bigint")
+            .IsRequired();
+        playerWallet.Property(entity => entity.UpdatedAt)
+            .HasColumnName("updated_at")
+            .HasColumnType("timestamp with time zone")
+            .IsRequired();
+        playerWallet.HasOne<Player>()
+            .WithOne()
+            .HasForeignKey<PlayerWallet>(entity => entity.PlayerId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        var inventoryItem = modelBuilder.Entity<InventoryItem>();
+
+        // 동일 플레이어가 같은 종류의 아이템을 여러 행으로 중복 보유하지 않도록 복합 기본 키를 사용합니다.
+        inventoryItem.ToTable(
+            "inventories",
+            table =>
+            {
+                table.HasCheckConstraint("CK_inventories_item_id_positive", "item_id > 0");
+                table.HasCheckConstraint("CK_inventories_quantity_positive", "quantity > 0");
+            });
+        inventoryItem.HasKey(entity => new { entity.PlayerId, entity.ItemId });
+        inventoryItem.Property(entity => entity.PlayerId)
+            .HasColumnName("player_id")
+            .ValueGeneratedNever();
+        inventoryItem.Property(entity => entity.ItemId)
+            .HasColumnName("item_id")
+            .ValueGeneratedNever();
+        inventoryItem.Property(entity => entity.Quantity)
+            .HasColumnName("quantity")
+            .IsRequired();
+        inventoryItem.Property(entity => entity.UpdatedAt)
+            .HasColumnName("updated_at")
+            .HasColumnType("timestamp with time zone")
+            .IsRequired();
+        inventoryItem.HasOne<Player>()
+            .WithMany()
+            .HasForeignKey(entity => entity.PlayerId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        var rewardAudit = modelBuilder.Entity<RewardAudit>();
+
+        // request_id에 UNIQUE 제약 조건을 두어 같은 멱등성 키를 DB 차원에서 한 번만 기록할 수 있게 합니다.
+        rewardAudit.ToTable(
+            "reward_audits",
+            table =>
+            {
+                table.HasCheckConstraint("CK_reward_audits_gold_nonnegative", "gold_amount >= 0");
+                table.HasCheckConstraint(
+                    "CK_reward_audits_item_reward_shape",
+                    "(item_id IS NULL AND item_quantity IS NULL) OR (item_id IS NOT NULL AND item_quantity IS NOT NULL AND item_id > 0 AND item_quantity > 0)");
+                table.HasCheckConstraint(
+                    "CK_reward_audits_has_reward",
+                    "gold_amount > 0 OR item_id IS NOT NULL");
+            });
+        rewardAudit.HasKey(entity => entity.Id);
+        rewardAudit.Property(entity => entity.Id)
+            .HasColumnName("reward_audit_id")
+            .ValueGeneratedNever();
+        rewardAudit.Property(entity => entity.RequestId)
+            .HasColumnName("request_id")
+            .ValueGeneratedNever();
+        rewardAudit.HasIndex(entity => entity.RequestId)
+            .IsUnique();
+        rewardAudit.Property(entity => entity.PlayerId)
+            .HasColumnName("player_id")
+            .IsRequired();
+        rewardAudit.Property(entity => entity.GoldAmount)
+            .HasColumnName("gold_amount")
+            .HasColumnType("bigint")
+            .IsRequired();
+        rewardAudit.Property(entity => entity.ItemId)
+            .HasColumnName("item_id");
+        rewardAudit.Property(entity => entity.ItemQuantity)
+            .HasColumnName("item_quantity");
+        rewardAudit.Property(entity => entity.Reason)
+            .HasColumnName("reason")
+            .HasMaxLength(RewardAudit.MaxReasonLength)
+            .IsRequired();
+        rewardAudit.Property(entity => entity.CreatedAt)
+            .HasColumnName("created_at")
+            .HasColumnType("timestamp with time zone")
+            .IsRequired();
+        // 감사 기록은 추후 운영 추적에 필요하므로 플레이어 삭제가 자동으로 이력을 지우지 않도록 Restrict를 사용합니다.
+        rewardAudit.HasOne<Player>()
+            .WithMany()
+            .HasForeignKey(entity => entity.PlayerId)
+            .OnDelete(DeleteBehavior.Restrict);
     }
 }
