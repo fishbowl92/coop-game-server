@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 실제 PostgreSQL Docker 컨테이너를 테스트 중 생성하고 폐기하는 라이브러리입니다. -->
+    <PackageReference Include="Testcontainers.PostgreSql" Version="4.13.0" />
+    <PackageReference Include="coverlet.collector" Version="6.0.4" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 실제 RewardService와 EF Core 매핑, 마이그레이션을 검증하기 위해 API 프로젝트를 참조합니다. -->
+    <ProjectReference Include="..\..\src\CoopGameServer.Api\CoopGameServer.Api.csproj" />
+
+    <!-- 테스트가 실제 API 요청과 같은 보상 계약을 사용하도록 Contracts 프로젝트를 직접 참조합니다. -->
+    <ProjectReference Include="..\..\src\CoopGameServer.Contracts\CoopGameServer.Contracts.csproj" />
+  </ItemGroup>
+
+</Project>
