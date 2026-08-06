@@ -1,4 +1,5 @@
 using CoopGameServer.Api.Data;
+using CoopGameServer.Api.Application.Rewards;
 using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -14,6 +15,9 @@ var gameDbConnectionString = builder.Configuration.GetConnectionString("GameDb")
 // 요청마다 필요한 GameDbContext를 만들고, 작업이 끝나면 안전하게 정리하도록 등록합니다.
 builder.Services.AddDbContext<GameDbContext>(options =>
     options.UseNpgsql(gameDbConnectionString));
+
+// 보상 서비스도 HTTP 요청마다 독립 인스턴스를 사용하여 해당 요청의 GameDbContext와 같은 작업 범위를 공유합니다.
+builder.Services.AddScoped<RewardService>();
 
 builder.Services.AddControllers();
 // Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
