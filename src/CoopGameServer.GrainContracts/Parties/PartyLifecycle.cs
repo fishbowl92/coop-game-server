@@ -6,8 +6,8 @@ namespace CoopGameServer.GrainContracts.Parties;
 public enum PartyLifecycle
 {
     /// <summary>멤버를 받고 게임 기능을 수행할 수 있는 상태입니다.</summary>
-    Active,
+    Active = 0,
 
     /// <summary>더 이상 가입하거나 같은 partyId로 다시 생성할 수 없는 상태입니다.</summary>
-    Disbanded,
+    Disbanded = 1,
 }

@@ -2,6 +2,7 @@ using CoopGameServer.Domain.Inventories;
 using CoopGameServer.Domain.Players;
 using CoopGameServer.Domain.Rewards;
 using CoopGameServer.Domain.Wallets;
+using CoopGameServer.Persistence.Parties;
 using Microsoft.EntityFrameworkCore;
 
 namespace CoopGameServer.Persistence;
@@ -44,6 +45,15 @@ public sealed class GameDbContext : DbContext
     /// reward_audits 테이블에 대응하는 보상 지급 이력 집합입니다.
     /// </summary>
     public DbSet<RewardAudit> RewardAudits => Set<RewardAudit>();
+
+    /// <summary>parties 테이블에 대응하는 파티 상태 집합입니다.</summary>
+    public DbSet<PartyRecord> Parties => Set<PartyRecord>();
+
+    /// <summary>party_members 테이블에 대응하는 파티 멤버 집합입니다.</summary>
+    public DbSet<PartyMemberRecord> PartyMembers => Set<PartyMemberRecord>();
+
+    /// <summary>party_requests 테이블에 대응하는 파티 명령 처리 기록 집합입니다.</summary>
+    public DbSet<PartyRequestRecord> PartyRequests => Set<PartyRequestRecord>();
 
     /// <summary>
     /// C# Player 객체와 PostgreSQL players 테이블 사이의 세부 규칙을 정의합니다.
@@ -185,5 +195,102 @@ public sealed class GameDbContext : DbContext
             .WithMany()
             .HasForeignKey(entity => entity.PlayerId)
             .OnDelete(DeleteBehavior.Restrict);
+
+        ConfigurePartyPersistence(modelBuilder);
+    }
+
+    /// <summary>
+    /// 파티 상태·멤버·멱등성 요청을 PostgreSQL 테이블에 저장하는 규칙을 정의합니다.
+    /// </summary>
+    private static void ConfigurePartyPersistence(ModelBuilder modelBuilder)
+    {
+        var party = modelBuilder.Entity<PartyRecord>();
+
+        party.ToTable("parties");
+        party.HasKey(entity => entity.PartyId);
+        party.Property(entity => entity.PartyId)
+            .HasColumnName("party_id")
+            .ValueGeneratedNever();
+        party.Property(entity => entity.Lifecycle)
+            .HasColumnName("lifecycle")
+            .IsRequired();
+        party.Property(entity => entity.LeaderPlayerId)
+            .HasColumnName("leader_player_id");
+        party.Property(entity => entity.CreatedAt)
+            .HasColumnName("created_at")
+            .HasColumnType("timestamp with time zone")
+            .IsRequired();
+        party.Property(entity => entity.UpdatedAt)
+            .HasColumnName("updated_at")
+            .HasColumnType("timestamp with time zone")
+            .IsRequired();
+
+        var partyMember = modelBuilder.Entity<PartyMemberRecord>();
+
+        partyMember.ToTable(
+            "party_members",
+            table => table.HasCheckConstraint("CK_party_members_join_order_nonnegative", "join_order >= 0"));
+        partyMember.HasKey(entity => new { entity.PartyId, entity.PlayerId });
+        partyMember.Property(entity => entity.PartyId)
+            .HasColumnName("party_id")
+            .ValueGeneratedNever();
+        partyMember.Property(entity => entity.PlayerId)
+            .HasColumnName("player_id")
+            .ValueGeneratedNever();
+        partyMember.Property(entity => entity.JoinOrder)
+            .HasColumnName("join_order")
+            .IsRequired();
+
+        // 이 UNIQUE 인덱스가 서로 다른 두 PartyGrain의 동시 가입 요청도 최종적으로 하나만 허용합니다.
+        partyMember.HasIndex(entity => entity.PlayerId)
+            .IsUnique()
+            .HasDatabaseName("IX_party_members_player_id");
+        partyMember.HasIndex(entity => new { entity.PartyId, entity.JoinOrder })
+            .HasDatabaseName("IX_party_members_party_id_join_order");
+        partyMember.HasOne<PartyRecord>()
+            .WithMany()
+            .HasForeignKey(entity => entity.PartyId)
+            .OnDelete(DeleteBehavior.Cascade);
+        partyMember.HasOne<Player>()
+            .WithMany()
+            .HasForeignKey(entity => entity.PlayerId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        var partyRequest = modelBuilder.Entity<PartyRequestRecord>();
+
+        partyRequest.ToTable("party_requests");
+        partyRequest.HasKey(entity => entity.RequestId);
+        partyRequest.Property(entity => entity.RequestId)
+            .HasColumnName("request_id")
+            .ValueGeneratedNever();
+        partyRequest.Property(entity => entity.PartyId)
+            .HasColumnName("party_id")
+            .ValueGeneratedNever();
+        partyRequest.Property(entity => entity.CommandKind)
+            .HasColumnName("command_kind")
+            .HasMaxLength(20)
+            .IsRequired();
+        partyRequest.Property(entity => entity.PlayerId)
+            .HasColumnName("player_id")
+            .ValueGeneratedNever();
+        partyRequest.Property(entity => entity.ResultError)
+            .HasColumnName("result_error")
+            .IsRequired();
+        partyRequest.Property(entity => entity.ResultLifecycle)
+            .HasColumnName("result_lifecycle");
+        partyRequest.Property(entity => entity.ResultLeaderPlayerId)
+            .HasColumnName("result_leader_player_id");
+        partyRequest.Property(entity => entity.ResultMemberPlayerIds)
+            .HasColumnName("result_member_player_ids")
+            .HasColumnType("uuid[]");
+        partyRequest.Property(entity => entity.CreatedAt)
+            .HasColumnName("created_at")
+            .HasColumnType("timestamp with time zone")
+            .IsRequired();
+        partyRequest.HasIndex(entity => entity.PartyId)
+            .HasDatabaseName("IX_party_requests_party_id");
+
+        // party_requests는 실패한 Create/Join도 저장해야 하므로 parties와 외래 키로 묶지 않습니다.
+        // 그래야 아직 존재하지 않는 파티에 대한 최초 실패 응답도 재시작 뒤 동일하게 재생할 수 있습니다.
     }
 }

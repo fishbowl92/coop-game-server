@@ -5,15 +5,22 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <!-- 장시간 실행되는 Orleans 서버의 처리량에 맞는 Server GC를 사용합니다. -->
+    <ServerGarbageCollection>true</ServerGarbageCollection>
+    <!-- Api와 Silo가 같은 로컬 GameDb 연결 문자열을 읽도록 User Secrets 저장소를 공유합니다. -->
+    <UserSecretsId>91eecbce-ee39-4d00-8c89-1bf661eca078</UserSecretsId>
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="10.0.10" />
     <PackageReference Include="Microsoft.Orleans.Server" Version="10.0.0" />
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.3" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\CoopGameServer.Grains\CoopGameServer.Grains.csproj" />
     <ProjectReference Include="..\CoopGameServer.GrainContracts\CoopGameServer.GrainContracts.csproj" />
+    <ProjectReference Include="..\CoopGameServer.Persistence\CoopGameServer.Persistence.csproj" />
   </ItemGroup>
 
 </Project>
