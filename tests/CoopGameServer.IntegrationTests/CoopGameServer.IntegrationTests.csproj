@@ -10,6 +10,8 @@
   <ItemGroup>
     <!-- 실제 PostgreSQL Docker 컨테이너를 테스트 중 생성하고 폐기하는 라이브러리입니다. -->
     <PackageReference Include="Testcontainers.PostgreSql" Version="4.13.0" />
+    <!-- Testcontainers의 간접 의존성에서 발견된 취약한 SSH.NET 버전을 수정 버전으로 고정합니다. -->
+    <PackageReference Include="SSH.NET" Version="2026.0.0" />
     <PackageReference Include="coverlet.collector" Version="6.0.4" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
     <PackageReference Include="xunit" Version="2.9.3" />
