@@ -1,4 +1,4 @@
-using CoopGameServer.Api.Domain.Rewards;
+using CoopGameServer.Domain.Rewards;
 
 namespace CoopGameServer.Api.Application.Rewards;
 

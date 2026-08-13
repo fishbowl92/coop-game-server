@@ -1,4 +1,4 @@
-namespace CoopGameServer.Api.Domain.Players;
+namespace CoopGameServer.Domain.Players;
 
 /// <summary>
 /// 게임 서버에서 한 명의 플레이어를 나타내는 기본 도메인 엔티티입니다.

@@ -62,10 +62,10 @@ dotnet user-secrets set "ConnectionStrings:GameDb" "Host=localhost;Port=15432;Da
 새 PostgreSQL 볼륨을 만들었거나 Migration이 추가됐다면 실행합니다.
 
 ```powershell
-dotnet ef database update --project .\src\CoopGameServer.Api\CoopGameServer.Api.csproj --startup-project .\src\CoopGameServer.Api\CoopGameServer.Api.csproj
+dotnet ef database update --project .\src\CoopGameServer.Persistence\CoopGameServer.Persistence.csproj --startup-project .\src\CoopGameServer.Api\CoopGameServer.Api.csproj
 ```
 
-`database update`는 아직 적용되지 않은 EF Core Migration을 실행해 테이블·인덱스·제약 조건을 현재 코드와 맞춥니다. API는 시작할 때 Migration을 자동 적용하지 않으므로 새 환경에서는 이 단계가 필요합니다.
+`database update`는 아직 적용되지 않은 EF Core Migration을 실행해 테이블·인덱스·제약 조건을 현재 코드와 맞춥니다. `--project`는 `GameDbContext`와 Migration이 있는 Persistence 프로젝트를 지정하고, `--startup-project`는 User Secrets 연결 문자열을 읽는 API 프로젝트를 지정합니다. API는 시작할 때 Migration을 자동 적용하지 않으므로 새 환경에서는 이 단계가 필요합니다.
 
 EF Core CLI가 없다면 먼저 설치합니다.
 

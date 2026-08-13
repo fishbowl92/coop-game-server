@@ -1,8 +1,8 @@
 using CoopGameServer.Api.Application.Rewards;
-using CoopGameServer.Api.Domain.Inventories;
-using CoopGameServer.Api.Domain.Players;
-using CoopGameServer.Api.Domain.Wallets;
 using CoopGameServer.Contracts.Rewards;
+using CoopGameServer.Domain.Inventories;
+using CoopGameServer.Domain.Players;
+using CoopGameServer.Domain.Wallets;
 using CoopGameServer.IntegrationTests.Infrastructure;
 using Microsoft.EntityFrameworkCore;
 

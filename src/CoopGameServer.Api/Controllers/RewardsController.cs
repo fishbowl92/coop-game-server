@@ -1,6 +1,6 @@
 using CoopGameServer.Api.Application.Rewards;
-using CoopGameServer.Api.Domain.Rewards;
 using CoopGameServer.Contracts.Rewards;
+using CoopGameServer.Domain.Rewards;
 using Microsoft.AspNetCore.Mvc;
 
 namespace CoopGameServer.Api.Controllers;

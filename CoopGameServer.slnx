@@ -2,8 +2,10 @@
   <Folder Name="/src/">
     <Project Path="src/CoopGameServer.Api/CoopGameServer.Api.csproj" />
     <Project Path="src/CoopGameServer.Contracts/CoopGameServer.Contracts.csproj" />
+    <Project Path="src/CoopGameServer.Domain/CoopGameServer.Domain.csproj" />
     <Project Path="src/CoopGameServer.GrainContracts/CoopGameServer.GrainContracts.csproj" />
     <Project Path="src/CoopGameServer.Grains/CoopGameServer.Grains.csproj" />
+    <Project Path="src/CoopGameServer.Persistence/CoopGameServer.Persistence.csproj" />
     <Project Path="src/CoopGameServer.Silo/CoopGameServer.Silo.csproj" />
   </Folder>
   <Folder Name="/tests/">

@@ -2,7 +2,7 @@
 
 > Microsoft Orleans 기반 협동 게임 서비스 백엔드를 단계적으로 구현하는 C#·.NET 10 프로젝트입니다.
 
-현재는 Player 프로필, PostgreSQL 영속성, 재화·인벤토리 보상, 멱등성·트랜잭션, PostgreSQL 통합 테스트와 API → Orleans Client → Silo → Ping Grain 연결까지 구현했습니다. 3주차의 다음 게임 기능은 PartyGrain이며, Redis 애플리케이션 연동·인증·운영 배포는 아직 구현하지 않았습니다.
+현재는 Player 프로필, PostgreSQL 영속성, 재화·인벤토리 보상, 멱등성·트랜잭션, PostgreSQL 통합 테스트와 API → Orleans Client → Silo → Ping Grain 연결을 구현했습니다. PartyGrain의 메모리 기반 생성·가입·탈퇴·해산·리더 승계 규칙도 구현했으며, 다음 단계는 파티 상태의 PostgreSQL 영속화입니다. Redis 애플리케이션 연동·인증·운영 배포는 아직 구현하지 않았습니다.
 
 ## 현재 구현 범위
 
@@ -14,6 +14,7 @@
 - Player 행 잠금을 이용한 서로 다른 동시 보상의 유실 갱신 방지
 - xUnit 단위 테스트와 Testcontainers 기반 실제 PostgreSQL 통합 테스트
 - 별도 Orleans Silo와 진단용 Ping Grain 호출
+- 메모리 기반 PartyGrain 규칙과 Orleans TestCluster 자동 테스트
 - GitHub Actions CI(Continuous Integration, 지속적 통합) 빌드·테스트
 
 Redis(REmote DIctionary Server, 원격 딕셔너리 서버)는 현재 로컬 컨테이너만 준비되어 있습니다. 캐시·TTL(Time To Live, 자동 만료 시간)·장애 시 PostgreSQL 대체 경로는 5주차에 구현할 계획입니다.
@@ -25,6 +26,8 @@ HTTP Client
     ├─ Player·Reward API ──> ASP.NET Core ──> EF Core ──> PostgreSQL
     └─ Orleans Ping API ──> Orleans Client ──> Silo ──> PingGrain
 
+IntegrationTests ──> Orleans TestCluster ──> PartyGrain
+
 Redis: 컨테이너만 준비됨, 애플리케이션 연결은 아직 없음
 ```
 
@@ -33,10 +36,12 @@ Redis: 컨테이너만 준비됨, 애플리케이션 연결은 아직 없음
 ```text
 CoopGameServer/
 ├── src/
-│   ├── CoopGameServer.Api/             # ASP.NET Core API, EF Core, 보상 서비스
+│   ├── CoopGameServer.Api/             # ASP.NET Core API와 보상 유스케이스
 │   ├── CoopGameServer.Contracts/       # HTTP 요청·응답 계약
+│   ├── CoopGameServer.Domain/          # Player·지갑·인벤토리·보상 도메인 규칙
 │   ├── CoopGameServer.GrainContracts/  # Orleans Grain 호출 계약
 │   ├── CoopGameServer.Grains/          # Grain 구현체
+│   ├── CoopGameServer.Persistence/     # GameDbContext, EF Core 매핑·Migration
 │   └── CoopGameServer.Silo/            # Orleans Grain 실행 호스트
 ├── tests/
 │   ├── CoopGameServer.UnitTests/        # 도메인·Controller 단위 테스트
@@ -104,10 +109,10 @@ dotnet user-secrets set "ConnectionStrings:GameDb" "Host=localhost;Port=15432;Da
 ### 4. PostgreSQL 스키마 적용
 
 ```powershell
-dotnet ef database update --project .\src\CoopGameServer.Api\CoopGameServer.Api.csproj --startup-project .\src\CoopGameServer.Api\CoopGameServer.Api.csproj
+dotnet ef database update --project .\src\CoopGameServer.Persistence\CoopGameServer.Persistence.csproj --startup-project .\src\CoopGameServer.Api\CoopGameServer.Api.csproj
 ```
 
-이 명령은 `Data/Migrations`의 Migration을 PostgreSQL에 순서대로 적용해 현재 코드가 요구하는 테이블·인덱스·제약 조건을 만듭니다. 새 데이터 볼륨에서는 반드시 한 번 실행해야 합니다.
+이 명령은 `CoopGameServer.Persistence/Migrations`의 Migration을 PostgreSQL에 순서대로 적용해 현재 코드가 요구하는 테이블·인덱스·제약 조건을 만듭니다. `--project`는 마이그레이션이 있는 프로젝트를, `--startup-project`는 연결 문자열과 실행 설정을 제공하는 API 프로젝트를 지정합니다. 새 데이터 볼륨에서는 반드시 한 번 실행해야 합니다.
 
 ### 5. Release 빌드와 자동 테스트
 

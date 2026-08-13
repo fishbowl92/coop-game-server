@@ -12,6 +12,7 @@
     <!-- PostgreSQL 제공자가 끌고 오는 이전 EF Core 버전과 충돌하지 않도록 서버 기준 버전을 명시합니다. -->
     <PackageReference Include="Microsoft.EntityFrameworkCore" Version="10.0.10" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="10.0.10" />
+    <!-- Api를 startup-project로 사용하는 dotnet ef가 설정과 User Secrets를 읽을 때 필요합니다. -->
     <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.10">
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
       <PrivateAssets>all</PrivateAssets>
@@ -24,7 +25,10 @@
   <ItemGroup>
     <!-- API는 프로젝트 사이의 요청·응답 약속을 담은 Contracts 프로젝트를 참조합니다. -->
     <ProjectReference Include="..\CoopGameServer.Contracts\CoopGameServer.Contracts.csproj" />
+    <!-- 게임 규칙과 PostgreSQL 저장 구현을 HTTP 실행 프로젝트에서 사용합니다. -->
+    <ProjectReference Include="..\CoopGameServer.Domain\CoopGameServer.Domain.csproj" />
     <ProjectReference Include="..\CoopGameServer.GrainContracts\CoopGameServer.GrainContracts.csproj" />
+    <ProjectReference Include="..\CoopGameServer.Persistence\CoopGameServer.Persistence.csproj" />
   </ItemGroup>
 
 </Project>

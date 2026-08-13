@@ -25,11 +25,15 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- 실제 RewardService와 EF Core 매핑, 마이그레이션을 검증하기 위해 API 프로젝트를 참조합니다. -->
+    <!-- 실제 RewardService를 검증하기 위해 API 프로젝트를 참조합니다. -->
     <ProjectReference Include="..\..\src\CoopGameServer.Api\CoopGameServer.Api.csproj" />
 
     <!-- 테스트가 실제 API 요청과 같은 보상 계약을 사용하도록 Contracts 프로젝트를 직접 참조합니다. -->
     <ProjectReference Include="..\..\src\CoopGameServer.Contracts\CoopGameServer.Contracts.csproj" />
+
+    <!-- 게임 규칙과 EF Core 매핑·마이그레이션을 각 책임 프로젝트에서 직접 참조합니다. -->
+    <ProjectReference Include="..\..\src\CoopGameServer.Domain\CoopGameServer.Domain.csproj" />
+    <ProjectReference Include="..\..\src\CoopGameServer.Persistence\CoopGameServer.Persistence.csproj" />
 
     <!-- PartyGrain의 호출 계약과 실제 구현을 TestCluster에 함께 제공합니다. -->
     <ProjectReference Include="..\..\src\CoopGameServer.GrainContracts\CoopGameServer.GrainContracts.csproj" />

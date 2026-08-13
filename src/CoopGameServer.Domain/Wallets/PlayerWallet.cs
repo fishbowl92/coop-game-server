@@ -1,4 +1,4 @@
-namespace CoopGameServer.Api.Domain.Wallets;
+namespace CoopGameServer.Domain.Wallets;
 
 /// <summary>
 /// 플레이어 한 명의 골드(Gold, 게임 내 기본 재화) 잔액을 나타냅니다.

@@ -1,4 +1,4 @@
-namespace CoopGameServer.Api.Domain.Inventories;
+namespace CoopGameServer.Domain.Inventories;
 
 /// <summary>
 /// 한 플레이어가 보유한 한 종류의 아이템과 그 수량을 나타냅니다.

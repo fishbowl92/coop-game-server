@@ -1,4 +1,4 @@
-namespace CoopGameServer.Api.Domain.Rewards;
+namespace CoopGameServer.Domain.Rewards;
 
 /// <summary>
 /// 보상 지급 요청이 실제로 적용되었다는 변경 불가능한 기록입니다.

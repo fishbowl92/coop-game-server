@@ -1,4 +1,4 @@
-using CoopGameServer.Api.Domain.Rewards;
+using CoopGameServer.Domain.Rewards;
 
 namespace CoopGameServer.UnitTests.Domain.Rewards;
 

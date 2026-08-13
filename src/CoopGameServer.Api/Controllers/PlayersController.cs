@@ -1,6 +1,6 @@
-using CoopGameServer.Api.Data;
-using CoopGameServer.Api.Domain.Players;
 using CoopGameServer.Contracts.Players;
+using CoopGameServer.Domain.Players;
+using CoopGameServer.Persistence;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;

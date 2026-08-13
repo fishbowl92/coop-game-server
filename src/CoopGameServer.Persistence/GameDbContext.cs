@@ -1,10 +1,10 @@
-using CoopGameServer.Api.Domain.Inventories;
-using CoopGameServer.Api.Domain.Players;
-using CoopGameServer.Api.Domain.Rewards;
-using CoopGameServer.Api.Domain.Wallets;
+using CoopGameServer.Domain.Inventories;
+using CoopGameServer.Domain.Players;
+using CoopGameServer.Domain.Rewards;
+using CoopGameServer.Domain.Wallets;
 using Microsoft.EntityFrameworkCore;
 
-namespace CoopGameServer.Api.Data;
+namespace CoopGameServer.Persistence;
 
 /// <summary>
 /// 게임 서버가 PostgreSQL 데이터베이스와 통신할 때 사용하는 EF Core의 작업 단위입니다.

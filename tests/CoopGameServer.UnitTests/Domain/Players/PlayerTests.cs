@@ -1,4 +1,4 @@
-using CoopGameServer.Api.Domain.Players;
+using CoopGameServer.Domain.Players;
 
 namespace CoopGameServer.UnitTests.Domain.Players;
 

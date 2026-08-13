@@ -1,4 +1,4 @@
-using CoopGameServer.Api.Domain.Wallets;
+using CoopGameServer.Domain.Wallets;
 
 namespace CoopGameServer.UnitTests.Domain.Wallets;
 

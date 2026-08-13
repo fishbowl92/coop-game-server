@@ -1,4 +1,4 @@
-using CoopGameServer.Api.Domain.Inventories;
+using CoopGameServer.Domain.Inventories;
 
 namespace CoopGameServer.UnitTests.Domain.Inventories;
 

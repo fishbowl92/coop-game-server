@@ -1,5 +1,5 @@
 using CoopGameServer.Api.Application.Rewards;
-using CoopGameServer.Api.Data;
+using CoopGameServer.Persistence;
 using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);

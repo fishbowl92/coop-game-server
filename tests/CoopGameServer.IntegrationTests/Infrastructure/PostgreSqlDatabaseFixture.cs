@@ -1,4 +1,4 @@
-using CoopGameServer.Api.Data;
+using CoopGameServer.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Testcontainers.PostgreSql;
 

@@ -1,8 +1,8 @@
-using CoopGameServer.Api.Data;
-using CoopGameServer.Api.Domain.Inventories;
-using CoopGameServer.Api.Domain.Rewards;
-using CoopGameServer.Api.Domain.Wallets;
 using CoopGameServer.Contracts.Rewards;
+using CoopGameServer.Domain.Inventories;
+using CoopGameServer.Domain.Rewards;
+using CoopGameServer.Domain.Wallets;
+using CoopGameServer.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
 

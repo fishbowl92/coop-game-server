@@ -21,11 +21,15 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- Player 엔티티의 실제 게임 규칙을 검증하기 위해 API 프로젝트를 참조합니다. -->
+    <!-- 컨트롤러 동작을 검증하기 위해 API 프로젝트를 참조합니다. -->
     <ProjectReference Include="..\..\src\CoopGameServer.Api\CoopGameServer.Api.csproj" />
 
     <!-- 테스트는 실제 서버와 같은 Contracts 형식을 사용해 프로젝트 연결을 검증합니다. -->
     <ProjectReference Include="..\..\src\CoopGameServer.Contracts\CoopGameServer.Contracts.csproj" />
+
+    <!-- 순수 게임 규칙과 GameDbContext를 각 책임 프로젝트에서 직접 검증합니다. -->
+    <ProjectReference Include="..\..\src\CoopGameServer.Domain\CoopGameServer.Domain.csproj" />
+    <ProjectReference Include="..\..\src\CoopGameServer.Persistence\CoopGameServer.Persistence.csproj" />
   </ItemGroup>
 
 </Project>
