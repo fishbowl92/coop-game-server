@@ -7,7 +7,8 @@
 - 저장소 루트의 `.editorconfig`를 기준으로 들여쓰기, 줄바꿈, 공백을 통일합니다.
 - `Directory.Build.props`는 모든 C# 프로젝트에 공통 적용되는 컴파일 설정입니다.
 - `Nullable(널러블, null 값 가능성 추적)` 경고는 가능한 한 수정합니다. 실행 중 `NullReferenceException(널 참조 예외)` 가능성을 일찍 찾기 위함입니다.
-- 로직을 새로 만들 때는 `tests/CoopGameServer.UnitTests`에 단위 테스트를 함께 작성합니다.
+- 순수 도메인 규칙을 새로 만들 때는 `tests/CoopGameServer.UnitTests`에 단위 테스트를 함께 작성합니다.
+- PostgreSQL의 Transaction·UNIQUE·행 잠금처럼 실제 DB 동작에 의존하면 `tests/CoopGameServer.IntegrationTests`에 통합 테스트를 작성합니다.
 
 ## 커밋 메시지
 
@@ -39,4 +40,5 @@
     dotnet test CoopGameServer.slnx
 
 - `dotnet build`: 솔루션의 모든 프로젝트를 컴파일하여 코드가 빌드되는지 확인합니다.
-- `dotnet test`: 테스트 프로젝트의 테스트를 실행합니다. 현재는 xUnit.net 테스트 프로젝트가 대상입니다.
+- `dotnet test`: xUnit.net 단위 테스트와 Testcontainers PostgreSQL 통합 테스트를 실행합니다.
+- 통합 테스트는 Compose 개발 DB가 아닌 일회성 PostgreSQL 컨테이너를 만들기 때문에 Docker Desktop Engine이 실행 중이어야 합니다.
