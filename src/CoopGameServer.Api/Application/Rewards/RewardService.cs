@@ -68,20 +68,22 @@ public sealed class RewardService
             return new GrantRewardResult(existingRewardAudit, IsReplay: true);
         }
 
-        // 보상 이력이 없는 신규 요청이라면 존재하는 플레이어에게만 진행합니다.
-        var playerExists = await _gameDbContext.Players
-            .AsNoTracking()
-            .AnyAsync(player => player.Id == playerId, cancellationToken);
-
-        if (!playerExists)
-        {
-            return null;
-        }
-
         await using var transaction = await _gameDbContext.Database.BeginTransactionAsync(cancellationToken);
 
         try
         {
+            // 같은 플레이어의 서로 다른 정상 보상 요청도 한 번에 하나씩 처리되도록
+            // players의 해당 행을 현재 트랜잭션이 끝날 때까지 잠급니다.
+            // 지갑이나 인벤토리가 아직 없어도 Player 행은 항상 존재하므로 안정적인 잠금 기준점이 됩니다.
+            var playerExists = await TryLockPlayerAsync(playerId, cancellationToken);
+
+            if (!playerExists)
+            {
+                // 존재하지 않는 플레이어에게는 아무 변경도 남기지 않고 트랜잭션을 종료합니다.
+                await transaction.RollbackAsync(cancellationToken);
+                return null;
+            }
+
             // 먼저 request_id UNIQUE 인덱스에 보상 이력을 기록해 같은 요청의 동시 처리를 하나만 통과시킵니다.
             _gameDbContext.RewardAudits.Add(requestedRewardAudit);
             await _gameDbContext.SaveChangesAsync(cancellationToken);
@@ -159,6 +161,34 @@ public sealed class RewardService
         return await _gameDbContext.RewardAudits
             .AsNoTracking()
             .SingleOrDefaultAsync(entity => entity.RequestId == requestId, cancellationToken);
+    }
+
+    /// <summary>
+    /// 보상 대상 Player 행을 PostgreSQL의 배타적 행 잠금으로 확보합니다.
+    /// </summary>
+    /// <remarks>
+    /// SELECT FOR UPDATE는 같은 Player 행을 잠그려는 다음 트랜잭션을 현재 트랜잭션 종료까지 기다리게 합니다.
+    /// 이 메서드는 반드시 BeginTransactionAsync 이후, 지갑·인벤토리를 읽기 전에 호출해야 합니다.
+    /// FromSqlInterpolated는 playerId를 SQL 문자열에 직접 붙이지 않고 DB 매개변수로 전달해 SQL Injection을 막습니다.
+    /// </remarks>
+    /// <param name="playerId">잠글 플레이어 식별자입니다.</param>
+    /// <param name="cancellationToken">행 잠금을 기다리는 작업도 HTTP 요청 취소를 따르도록 전달합니다.</param>
+    /// <returns>Player 행을 찾아 잠갔다면 true, 존재하지 않으면 false입니다.</returns>
+    private async Task<bool> TryLockPlayerAsync(Guid playerId, CancellationToken cancellationToken)
+    {
+        // ToListAsync로 원본 SQL을 바로 실행합니다. player_id는 PK이므로 결과는 0개 또는 1개입니다.
+        var lockedPlayers = await _gameDbContext.Players
+            .FromSqlInterpolated(
+                $"""
+                SELECT player_id, nickname, created_at, updated_at
+                FROM players
+                WHERE player_id = {playerId}
+                FOR UPDATE
+                """)
+            .AsNoTracking()
+            .ToListAsync(cancellationToken);
+
+        return lockedPlayers.Count == 1;
     }
 
     /// <summary>

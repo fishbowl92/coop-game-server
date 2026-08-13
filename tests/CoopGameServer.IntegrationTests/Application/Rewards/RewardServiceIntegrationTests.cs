@@ -1,4 +1,5 @@
 using CoopGameServer.Api.Application.Rewards;
+using CoopGameServer.Api.Domain.Inventories;
 using CoopGameServer.Api.Domain.Players;
 using CoopGameServer.Api.Domain.Wallets;
 using CoopGameServer.Contracts.Rewards;
@@ -83,6 +84,100 @@ public sealed class RewardServiceIntegrationTests : IAsyncLifetime
         Assert.Equal(500, wallet.Gold);
         Assert.Equal(2, inventoryItem.Quantity);
         Assert.Single(rewardAudits);
+    }
+
+    /// <summary>
+    /// 아직 지갑과 인벤토리가 없는 플레이어에게 서로 다른 보상 요청이 동시에 도착해도
+    /// 첫 행 생성이 충돌하지 않고 모든 보상이 누적되는지 검증합니다.
+    /// </summary>
+    [Fact]
+    public async Task GrantAsyncWithConcurrentDifferentRequestIdsCreatesBalancesOnceAndAccumulatesEveryReward()
+    {
+        const int concurrentRequestCount = 100;
+        const int itemId = 2001;
+
+        var player = await CreatePlayerAsync("FirstRacePlayer");
+        var startSignal = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        // 모든 작업을 먼저 만든 뒤 같은 신호로 동시에 출발시켜 첫 지갑·인벤토리 행 생성 경쟁을 재현합니다.
+        var rewardTasks = Enumerable.Range(0, concurrentRequestCount)
+            .Select(index => GrantRewardAfterStartSignalAsync(
+                player.Id,
+                new GrantRewardRequest(
+                    RequestId: Guid.NewGuid(),
+                    GoldAmount: 1,
+                    ItemId: itemId,
+                    ItemQuantity: 1,
+                    Reason: $"first-concurrent-reward-{index}"),
+                startSignal.Task))
+            .ToArray();
+
+        startSignal.SetResult(true);
+        var results = await Task.WhenAll(rewardTasks);
+
+        Assert.All(results, result => Assert.False(Assert.IsType<GrantRewardResult>(result).IsReplay));
+
+        await using var assertionDbContext = _databaseFixture.CreateDbContext();
+        var wallet = await assertionDbContext.PlayerWallets.SingleAsync(entity => entity.PlayerId == player.Id);
+        var inventoryItem = await assertionDbContext.InventoryItems.SingleAsync(
+            entity => entity.PlayerId == player.Id && entity.ItemId == itemId);
+        var rewardAuditCount = await assertionDbContext.RewardAudits
+            .CountAsync(entity => entity.PlayerId == player.Id);
+
+        Assert.Equal(concurrentRequestCount, wallet.Gold);
+        Assert.Equal(concurrentRequestCount, inventoryItem.Quantity);
+        Assert.Equal(concurrentRequestCount, rewardAuditCount);
+    }
+
+    /// <summary>
+    /// 이미 존재하는 지갑과 인벤토리에 서로 다른 요청이 동시에 보상을 추가해도
+    /// 읽기-수정-쓰기 경합으로 누적값이 유실되지 않는지 검증합니다.
+    /// </summary>
+    [Fact]
+    public async Task GrantAsyncWithConcurrentDifferentRequestIdsDoesNotLoseExistingBalanceUpdates()
+    {
+        const int concurrentRequestCount = 100;
+        const int itemId = 2002;
+
+        var player = await CreatePlayerAsync("ExistingRacePlayer");
+        var createdAt = DateTimeOffset.UtcNow;
+
+        // 첫 행 생성 경합과 기존 행 갱신 경합을 분리하기 위해 지갑과 인벤토리를 미리 저장합니다.
+        await using (var setupDbContext = _databaseFixture.CreateDbContext())
+        {
+            setupDbContext.PlayerWallets.Add(new PlayerWallet(player.Id, createdAt));
+            setupDbContext.InventoryItems.Add(new InventoryItem(player.Id, itemId, 1, createdAt));
+            await setupDbContext.SaveChangesAsync();
+        }
+
+        var startSignal = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var rewardTasks = Enumerable.Range(0, concurrentRequestCount)
+            .Select(index => GrantRewardAfterStartSignalAsync(
+                player.Id,
+                new GrantRewardRequest(
+                    RequestId: Guid.NewGuid(),
+                    GoldAmount: 1,
+                    ItemId: itemId,
+                    ItemQuantity: 1,
+                    Reason: $"existing-concurrent-reward-{index}"),
+                startSignal.Task))
+            .ToArray();
+
+        startSignal.SetResult(true);
+        var results = await Task.WhenAll(rewardTasks);
+
+        Assert.All(results, result => Assert.False(Assert.IsType<GrantRewardResult>(result).IsReplay));
+
+        await using var assertionDbContext = _databaseFixture.CreateDbContext();
+        var wallet = await assertionDbContext.PlayerWallets.SingleAsync(entity => entity.PlayerId == player.Id);
+        var inventoryItem = await assertionDbContext.InventoryItems.SingleAsync(
+            entity => entity.PlayerId == player.Id && entity.ItemId == itemId);
+        var rewardAuditCount = await assertionDbContext.RewardAudits
+            .CountAsync(entity => entity.PlayerId == player.Id);
+
+        Assert.Equal(concurrentRequestCount, wallet.Gold);
+        Assert.Equal(concurrentRequestCount + 1, inventoryItem.Quantity);
+        Assert.Equal(concurrentRequestCount, rewardAuditCount);
     }
 
     /// <summary>
@@ -181,5 +276,17 @@ public sealed class RewardServiceIntegrationTests : IAsyncLifetime
         var rewardService = new RewardService(gameDbContext);
 
         return await rewardService.GrantAsync(playerId, request, CancellationToken.None);
+    }
+
+    /// <summary>
+    /// 여러 보상 작업을 미리 대기시킨 뒤 하나의 신호로 동시에 시작합니다.
+    /// </summary>
+    private async Task<GrantRewardResult?> GrantRewardAfterStartSignalAsync(
+        Guid playerId,
+        GrantRewardRequest request,
+        Task startSignal)
+    {
+        await startSignal;
+        return await GrantRewardWithNewDbContextAsync(playerId, request);
     }
 }
