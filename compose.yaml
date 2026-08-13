@@ -7,7 +7,9 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
     ports:
-      - "5432:5432"
+      # Windows의 동적 예약 포트와 충돌하지 않도록 호스트에서는 15432를 사용합니다.
+      # 127.0.0.1에만 바인딩하여 같은 네트워크의 다른 PC에는 DB 포트를 공개하지 않습니다.
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-15432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -20,7 +22,8 @@ services:
     image: redis:7-alpine
     container_name: coopgame-redis
     ports:
-      - "6379:6379"
+      # Redis도 로컬 개발 PC에서만 접근할 수 있도록 루프백 주소에 제한합니다.
+      - "127.0.0.1:${REDIS_HOST_PORT:-6379}:6379"
     volumes:
       - redis_data:/data
     command: redis-server --appendonly yes
