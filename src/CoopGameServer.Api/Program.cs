@@ -1,6 +1,13 @@
+using System.Text;
+using CoopGameServer.Api.Application.Authentication;
+using CoopGameServer.Api.Authentication;
 using CoopGameServer.Api.Application.Parties;
 using CoopGameServer.Api.Application.Rewards;
+using CoopGameServer.Domain.Accounts;
 using CoopGameServer.Persistence;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Identity;
+using Microsoft.IdentityModel.Tokens;
 using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -16,6 +23,40 @@ var gameDbConnectionString = builder.Configuration.GetConnectionString("GameDb")
 // Player·보상 데이터의 최종 원본은 계속 PostgreSQL에 저장합니다.
 builder.Services.AddDbContext<GameDbContext>(options =>
     options.UseNpgsql(gameDbConnectionString));
+
+// JWT는 API가 "이 요청을 보낸 사람이 누구인가"를 확인하는 인증 수단입니다.
+// SigningKey는 User Secrets에서만 읽으며, 토큰을 발급할 때와 검증할 때 같은 키를 사용합니다.
+var jwtOptions = JwtOptions.FromConfiguration(builder.Configuration);
+builder.Services.AddSingleton(jwtOptions);
+builder.Services
+    .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    .AddJwtBearer(options =>
+    {
+        options.TokenValidationParameters = new TokenValidationParameters
+        {
+            ValidateIssuer = true,
+            ValidIssuer = jwtOptions.Issuer,
+            ValidateAudience = true,
+            ValidAudience = jwtOptions.Audience,
+            ValidateIssuerSigningKey = true,
+            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtOptions.SigningKey)),
+            ValidateLifetime = true,
+            ClockSkew = TimeSpan.FromMinutes(1),
+        };
+    });
+
+// Authorization(인가)은 인증된 사용자에게도 "어디까지 실행할 수 있는가"를 추가로 제한합니다.
+builder.Services.AddAuthorization(options =>
+{
+    options.AddPolicy(
+        AuthorizationPolicies.AdministratorOnly,
+        policy => policy.RequireRole(AccountRole.Administrator.ToString()));
+});
+
+// PasswordHasher는 비밀번호 원문을 저장하지 않고 salt를 포함한 검증용 해시만 만들고 비교합니다.
+builder.Services.AddScoped<IPasswordHasher<Account>, PasswordHasher<Account>>();
+builder.Services.AddSingleton<JwtTokenService>();
+builder.Services.AddScoped<AuthenticationService>();
 
 // 보상 서비스도 HTTP 요청 단위의 GameDbContext를 공유하도록 Scoped 수명으로 등록합니다.
 builder.Services.AddScoped<RewardService>();
@@ -44,6 +85,8 @@ if (app.Environment.IsDevelopment())
 
 app.UseHttpsRedirection();
 
+// 반드시 UseAuthorization보다 먼저 실행해야 JWT를 ClaimsPrincipal로 변환할 수 있습니다.
+app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapControllers();

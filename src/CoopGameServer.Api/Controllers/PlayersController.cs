@@ -1,5 +1,8 @@
+using CoopGameServer.Api.Authentication;
 using CoopGameServer.Contracts.Players;
+using CoopGameServer.Domain.Accounts;
 using CoopGameServer.Domain.Players;
+using Microsoft.AspNetCore.Authorization;
 using CoopGameServer.Persistence;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -32,6 +35,7 @@ public sealed class PlayersController : ControllerBase
     /// <param name="cancellationToken">클라이언트 연결이 끊길 때 DB 작업을 취소하기 위한 토큰입니다.</param>
     /// <returns>성공 시 201 Created와 생성된 플레이어 정보를 반환합니다.</returns>
     [HttpPost]
+    [Authorize(Policy = AuthorizationPolicies.AdministratorOnly)]
     [ProducesResponseType(typeof(PlayerResponse), StatusCodes.Status201Created)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
@@ -90,12 +94,20 @@ public sealed class PlayersController : ControllerBase
     /// <param name="cancellationToken">클라이언트 연결이 끊길 때 조회를 취소하기 위한 토큰입니다.</param>
     /// <returns>플레이어가 있으면 200 OK, 없으면 404 Not Found를 반환합니다.</returns>
     [HttpGet("{playerId:guid}")]
+    [Authorize]
     [ProducesResponseType(typeof(PlayerResponse), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
     public async Task<ActionResult<PlayerResponse>> GetPlayerById(
         Guid playerId,
         CancellationToken cancellationToken)
     {
+        // 관리자는 운영 목적으로 조회할 수 있지만, 일반 Player는 자기 식별자만 조회할 수 있습니다.
+        if (!User.CanAccessPlayer(playerId))
+        {
+            return Forbid();
+        }
+
         // 조회 결과를 수정하지 않으므로 Change Tracker가 객체 상태를 관리할 필요가 없습니다.
         // AsNoTracking은 이 읽기 전용 경로의 메모리 사용량과 추적 비용을 줄입니다.
         var player = await _gameDbContext.Players
@@ -116,15 +128,23 @@ public sealed class PlayersController : ControllerBase
     /// 플레이어가 없으면 404, 닉네임 규칙 위반이면 400, 중복 닉네임이면 409를 반환합니다.
     /// </returns>
     [HttpPatch("{playerId:guid}/nickname")]
+    [Authorize]
     [ProducesResponseType(typeof(PlayerResponse), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
     public async Task<ActionResult<PlayerResponse>> UpdatePlayerNickname(
         Guid playerId,
         [FromBody] UpdatePlayerNicknameRequest request,
         CancellationToken cancellationToken)
     {
+        // URL의 playerId가 토큰 안 PlayerId와 다르면 다른 사람의 닉네임 변경 시도이므로 막습니다.
+        if (!User.CanAccessPlayer(playerId))
+        {
+            return Forbid();
+        }
+
         // 변경 작업에서는 EF Core가 Player 상태를 추적해야 SaveChangesAsync가 UPDATE SQL을 생성할 수 있습니다.
         // 따라서 단순 조회 API와 달리 AsNoTracking을 사용하지 않습니다.
         var player = await _gameDbContext.Players

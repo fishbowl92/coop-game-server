@@ -1,4 +1,5 @@
 using CoopGameServer.Api.Controllers;
+using System.Security.Claims;
 using CoopGameServer.Contracts.Players;
 using CoopGameServer.Domain.Players;
 using CoopGameServer.Persistence;
@@ -25,6 +26,8 @@ public sealed class PlayersControllerTests
         // 따라서 중복 닉네임의 409 검증은 실제 PostgreSQL을 사용하는 통합 테스트에서 별도로 다룹니다.
 
         await using var gameDbContext = new GameDbContext(options);
+        // [Authorize] 특성 자체는 ASP.NET Core HTTP 파이프라인에서 실행됩니다.
+        // 이 테스트는 Controller의 생성·저장 책임만 직접 검증하므로 별도 인증 주입이 필요 없습니다.
         var controller = new PlayersController(gameDbContext);
 
         var actionResult = await controller.CreatePlayer(
@@ -58,7 +61,7 @@ public sealed class PlayersControllerTests
         gameDbContext.Players.Add(player);
         await gameDbContext.SaveChangesAsync();
 
-        var controller = new PlayersController(gameDbContext);
+        var controller = CreateController(gameDbContext, player.Id);
         var actionResult = await controller.UpdatePlayerNickname(
             player.Id,
             new UpdatePlayerNicknameRequest("  AfterRename  "),
@@ -83,10 +86,11 @@ public sealed class PlayersControllerTests
     public async Task UpdatePlayerNicknameReturnsNotFoundWhenPlayerDoesNotExist()
     {
         await using var gameDbContext = new GameDbContext(CreateInMemoryOptions());
-        var controller = new PlayersController(gameDbContext);
+        var missingPlayerId = Guid.NewGuid();
+        var controller = CreateController(gameDbContext, missingPlayerId);
 
         var actionResult = await controller.UpdatePlayerNickname(
-            Guid.NewGuid(),
+            missingPlayerId,
             new UpdatePlayerNicknameRequest("NoPlayer"),
             CancellationToken.None);
 
@@ -105,7 +109,7 @@ public sealed class PlayersControllerTests
         gameDbContext.Players.Add(player);
         await gameDbContext.SaveChangesAsync();
 
-        var controller = new PlayersController(gameDbContext);
+        var controller = CreateController(gameDbContext, player.Id);
         var actionResult = await controller.UpdatePlayerNickname(
             player.Id,
             new UpdatePlayerNicknameRequest("   "),
@@ -117,6 +121,28 @@ public sealed class PlayersControllerTests
 
         var savedPlayer = await gameDbContext.Players.SingleAsync();
         Assert.Equal("ValidNickname", savedPlayer.Nickname);
+    }
+
+    [Fact]
+    public async Task UpdatePlayerNicknameForAnotherPlayerReturnsForbidden()
+    {
+        var options = CreateInMemoryOptions();
+        var player = new Player(Guid.NewGuid(), "ProtectedPlayer", DateTimeOffset.UtcNow);
+
+        await using var gameDbContext = new GameDbContext(options);
+        gameDbContext.Players.Add(player);
+        await gameDbContext.SaveChangesAsync();
+
+        // 실제 HTTP 파이프라인에서는 [Authorize]가 토큰이 없는 요청을 먼저 401로 막습니다.
+        // 이 단위 테스트는 인증에 성공한 다른 Player의 토큰이 와도 소유자 비교가 403으로 막는지 직접 확인합니다.
+        var controller = CreateController(gameDbContext, Guid.NewGuid());
+        var actionResult = await controller.UpdatePlayerNickname(
+            player.Id,
+            new UpdatePlayerNicknameRequest("AttemptedRename"),
+            CancellationToken.None);
+
+        Assert.IsType<ForbidResult>(actionResult.Result);
+        Assert.Equal("ProtectedPlayer", (await gameDbContext.Players.SingleAsync()).Nickname);
     }
 
     /// <summary>
@@ -131,5 +157,28 @@ public sealed class PlayersControllerTests
         return new DbContextOptionsBuilder<GameDbContext>()
             .UseInMemoryDatabase(databaseName: Guid.NewGuid().ToString())
             .Options;
+    }
+
+    /// <summary>
+    /// Controller 직접 호출 테스트에 JWT 검증 뒤의 사용자 Claim을 재현합니다.
+    /// </summary>
+    /// <param name="gameDbContext">테스트용 DB 작업 객체입니다.</param>
+    /// <param name="playerId">토큰의 NameIdentifier에 들어갈 현재 Player 식별자입니다.</param>
+    private static PlayersController CreateController(GameDbContext gameDbContext, Guid playerId)
+    {
+        var controller = new PlayersController(gameDbContext);
+        var identity = new ClaimsIdentity(
+            [new Claim(ClaimTypes.NameIdentifier, playerId.ToString())],
+            authenticationType: "test-jwt");
+
+        controller.ControllerContext = new ControllerContext
+        {
+            HttpContext = new DefaultHttpContext
+            {
+                User = new ClaimsPrincipal(identity),
+            },
+        };
+
+        return controller;
     }
 }

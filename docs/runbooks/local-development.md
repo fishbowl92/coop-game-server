@@ -57,9 +57,29 @@ dotnet user-secrets set "ConnectionStrings:GameDb" "Host=localhost;Port=15432;Da
 - 비밀번호가 포함된 실제 명령은 화면 공유·문서·Git 커밋에 남기지 않습니다.
 - User Secrets는 개발 PC 전용 비밀 저장소이며 배포 환경의 비밀 관리 수단은 아닙니다.
 
-## 3. 데이터베이스 Migration 적용
+## 3. JWT 서명 키 저장
 
-새 PostgreSQL 볼륨을 만들었거나 Migration이 추가됐다면 실행합니다.
+인증 기능을 처음 실행하기 전 아래 명령으로 JWT(JSON Web Token, 서명된 로그인 토큰) 서명 키를 개발 PC의 User Secrets에만 만듭니다. 이 키는 Git·`.env`·문서에 직접 작성하지 않습니다.
+
+```powershell
+[byte[]]$jwtKeyBytes = New-Object byte[] 48
+$jwtRandomNumberGenerator = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+$jwtRandomNumberGenerator.GetBytes($jwtKeyBytes)
+$jwtSigningKey = [Convert]::ToBase64String($jwtKeyBytes)
+
+dotnet user-secrets set "Authentication:Jwt:SigningKey" $jwtSigningKey --project .\src\CoopGameServer.Api\CoopGameServer.Api.csproj
+dotnet user-secrets set "Authentication:Jwt:Issuer" "CoopGameServer" --project .\src\CoopGameServer.Api\CoopGameServer.Api.csproj
+dotnet user-secrets set "Authentication:Jwt:Audience" "CoopGameServer.Client" --project .\src\CoopGameServer.Api\CoopGameServer.Api.csproj
+
+$jwtRandomNumberGenerator.Dispose()
+Remove-Variable jwtKeyBytes, jwtRandomNumberGenerator, jwtSigningKey
+```
+
+`SigningKey`는 토큰 위조를 막는 비밀값이고, `Issuer`는 발급 서버, `Audience`는 토큰 수신 대상을 구분하는 값입니다. User Secrets는 개발 PC 전용이며 운영 배포에서는 별도 비밀 관리 도구를 사용해야 합니다.
+
+## 4. 데이터베이스 Migration 적용
+
+새 PostgreSQL 볼륨을 만들었거나 Migration이 추가됐다면 실행합니다. 이 단계는 API 프로젝트의 User Secrets에서 연결 문자열과 JWT 설정을 읽으므로, 반드시 바로 앞 2·3단계를 완료한 뒤 실행합니다.
 
 ```powershell
 dotnet ef database update --project .\src\CoopGameServer.Persistence\CoopGameServer.Persistence.csproj --startup-project .\src\CoopGameServer.Api\CoopGameServer.Api.csproj
@@ -73,7 +93,7 @@ EF Core CLI가 없다면 먼저 설치합니다.
 dotnet tool install --global dotnet-ef
 ```
 
-## 4. 빌드와 전체 테스트
+## 5. 빌드와 전체 테스트
 
 ```powershell
 dotnet build CoopGameServer.slnx --configuration Release
@@ -85,7 +105,7 @@ dotnet test CoopGameServer.slnx --configuration Release --no-build
 - 통합 테스트 컨테이너는 Compose 개발 DB와 별개이며 테스트 종료 시 폐기됩니다.
 - Docker Engine이 꺼져 있으면 단위 테스트는 가능하지만 통합 테스트는 시작 전 실패합니다.
 
-## 5. Orleans Silo 실행 — PowerShell 창 A
+## 6. Orleans Silo 실행 — PowerShell 창 A
 
 ```powershell
 dotnet run --project .\src\CoopGameServer.Silo\CoopGameServer.Silo.csproj
@@ -93,7 +113,7 @@ dotnet run --project .\src\CoopGameServer.Silo\CoopGameServer.Silo.csproj
 
 Silo(사일로)는 Grain을 활성화하고 실행하는 Orleans 서버 프로세스입니다. `Application started` 로그가 나온 뒤 창을 열어 둡니다.
 
-## 6. ASP.NET Core API 실행 — PowerShell 창 B
+## 7. ASP.NET Core API 실행 — PowerShell 창 B
 
 ```powershell
 dotnet run --project .\src\CoopGameServer.Api\CoopGameServer.Api.csproj
@@ -101,13 +121,18 @@ dotnet run --project .\src\CoopGameServer.Api\CoopGameServer.Api.csproj
 
 API는 Player·Reward HTTP 요청을 처리하고 Orleans Client로 Silo를 호출합니다. API와 Silo는 별도 프로세스이므로 동시에 실행되어야 Ping 경로가 성공합니다.
 
-## 7. Orleans 연결 확인 — PowerShell 창 C
+## 8. 로그인과 본인 API 확인 — PowerShell 창 C
 
 ```powershell
-Invoke-RestMethod -Uri http://localhost:5265/api/diagnostics/orleans/ping/local-smoke-test
+$registerBody = @{ loginId = "my_login"; password = "8자 이상 비밀번호"; nickname = "MyPlayer" } | ConvertTo-Json
+$authentication = Invoke-RestMethod -Method Post -Uri http://localhost:5265/api/auth/register -ContentType "application/json" -Body $registerBody
+$headers = @{ Authorization = "Bearer $($authentication.accessToken)" }
+Invoke-RestMethod -Uri "http://localhost:5265/api/players/$($authentication.playerId)" -Headers $headers
 ```
 
-`grainId`와 `respondedAtUtc`가 반환되면 API → Orleans Client → Silo → PingGrain 통신이 정상입니다. Ping은 PostgreSQL이나 Redis 데이터를 변경하지 않습니다.
+회원 가입은 Player와 일반 Account를 만들고 JWT를 반환합니다. 이후 `Authorization: Bearer <토큰>` 헤더를 넣어야 Player·Party API를 호출할 수 있습니다. `$authentication.accessToken`은 비밀번호처럼 취급하고 Git이나 화면 공유에 남기지 않습니다.
+
+Ping Grain과 보상 지급은 관리자 역할이 필요한 운영 API입니다. 관리자 계정 초기화 도구는 아직 구현하지 않았으므로 일반 가입 계정으로는 403 Forbidden을 받는 것이 정상입니다.
 
 ## 상태·로그 확인
 
@@ -146,6 +171,7 @@ Windows 예약 범위를 임의로 삭제하지 않습니다. 필요하면 `.env
 2. `.env`의 `POSTGRES_HOST_PORT`와 User Secrets의 `Port`가 같은지
 3. User Secrets의 사용자명·DB 이름·비밀번호가 `.env`와 같은지
 4. 새 볼륨이라면 `dotnet ef database update`를 실행했는지
+5. `Authentication:Jwt`의 SigningKey·Issuer·Audience가 User Secrets에 설정됐는지
 
 ## 안전한 종료
 

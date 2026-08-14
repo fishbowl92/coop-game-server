@@ -1,6 +1,8 @@
+using CoopGameServer.Api.Authentication;
 using CoopGameServer.Api.Application.Parties;
 using CoopGameServer.Contracts.Parties;
 using CoopGameServer.GrainContracts.Parties;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
 namespace CoopGameServer.Api.Controllers;
@@ -14,6 +16,7 @@ namespace CoopGameServer.Api.Controllers;
 /// HTTP가 아닌 다른 호출 경로에서도 같은 규칙을 재사용할 수 있게 합니다.
 /// </remarks>
 [ApiController]
+[Authorize]
 [Route("api/parties")]
 public sealed class PartiesController(PartyService partyService) : ControllerBase
 {
@@ -31,6 +34,13 @@ public sealed class PartiesController(PartyService partyService) : ControllerBas
         [FromBody] CreatePartyRequest request,
         CancellationToken cancellationToken)
     {
+        // 생성 요청의 리더는 토큰의 본인 Player와 같아야 합니다.
+        // 클라이언트가 다른 PlayerId를 본문에 넣어 대신 파티를 만들 수 없게 합니다.
+        if (!User.CanAccessPlayer(request.LeaderPlayerId))
+        {
+            return Forbid();
+        }
+
         var result = await partyService.CreateAsync(
             request.RequestId,
             request.LeaderPlayerId,
@@ -62,9 +72,19 @@ public sealed class PartiesController(PartyService partyService) : ControllerBas
         CancellationToken cancellationToken)
     {
         var snapshot = await partyService.GetAsync(partyId, cancellationToken);
-        return snapshot is null
-            ? NotFound()
-            : Ok(ToResponse(snapshot, isReplay: false));
+
+        if (snapshot is null)
+        {
+            return NotFound();
+        }
+
+        // 파티 정보에는 멤버 식별자가 포함되므로 현재 멤버 또는 관리자로 조회를 제한합니다.
+        if (!snapshot.MemberPlayerIds.Any(User.CanAccessPlayer))
+        {
+            return Forbid();
+        }
+
+        return Ok(ToResponse(snapshot, isReplay: false));
     }
 
     /// <summary>기존 파티에 플레이어 한 명을 가입시킵니다.</summary>
@@ -78,6 +98,12 @@ public sealed class PartiesController(PartyService partyService) : ControllerBas
         [FromBody] JoinPartyRequest request,
         CancellationToken cancellationToken)
     {
+        // 가입은 "내가 이 파티에 가입한다"는 자기 자신에 대한 요청만 허용합니다.
+        if (!User.CanAccessPlayer(request.PlayerId))
+        {
+            return Forbid();
+        }
+
         var result = await partyService.JoinAsync(
             partyId,
             request.RequestId,
@@ -101,6 +127,12 @@ public sealed class PartiesController(PartyService partyService) : ControllerBas
         [FromBody] LeavePartyRequest request,
         CancellationToken cancellationToken)
     {
+        // 탈퇴도 임의의 다른 멤버를 강제로 내보내지 못하도록 본인 요청으로 제한합니다.
+        if (!User.CanAccessPlayer(request.PlayerId))
+        {
+            return Forbid();
+        }
+
         var result = await partyService.LeaveAsync(
             partyId,
             request.RequestId,
@@ -122,6 +154,12 @@ public sealed class PartiesController(PartyService partyService) : ControllerBas
         [FromBody] DisbandPartyRequest request,
         CancellationToken cancellationToken)
     {
+        // 실제 리더인지 여부는 PartyGrain이 확인하고, 여기서는 먼저 요청자가 본인 ID를 위조하지 않았는지 확인합니다.
+        if (!User.CanAccessPlayer(request.LeaderPlayerId))
+        {
+            return Forbid();
+        }
+
         var result = await partyService.DisbandAsync(
             partyId,
             request.RequestId,

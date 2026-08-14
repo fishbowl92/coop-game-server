@@ -1,4 +1,6 @@
+using CoopGameServer.Api.Authentication;
 using CoopGameServer.GrainContracts.Diagnostics;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Orleans;
 using Orleans.Runtime;
@@ -33,6 +35,8 @@ public sealed class OrleansDiagnosticsController(IGrainFactory grainFactory) : C
     /// Silo에 연결할 수 없으면 503 Service Unavailable을 반환합니다.
     /// </returns>
     [HttpGet("ping/{grainId}")]
+    // 외부 사용자가 임의 Grain을 계속 활성화하지 못하도록 진단 호출은 운영자에게만 허용합니다.
+    [Authorize(Policy = AuthorizationPolicies.AdministratorOnly)]
     [ProducesResponseType<PingGrainResponse>(StatusCodes.Status200OK)]
     [ProducesResponseType<ProblemDetails>(StatusCodes.Status503ServiceUnavailable)]
     public async Task<ActionResult<PingGrainResponse>> PingAsync(

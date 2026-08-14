@@ -1,6 +1,8 @@
+using CoopGameServer.Api.Authentication;
 using CoopGameServer.Api.Application.Rewards;
 using CoopGameServer.Contracts.Rewards;
 using CoopGameServer.Domain.Rewards;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
 namespace CoopGameServer.Api.Controllers;
@@ -34,6 +36,9 @@ public sealed class RewardsController : ControllerBase
     /// 유효하지 않은 입력은 400, 없는 플레이어는 404, 다른 내용으로 키를 재사용하면 409를 반환합니다.
     /// </returns>
     [HttpPost]
+    // 보상 액수·아이템 종류는 일반 사용자가 정할 수 있는 값이 아닙니다.
+    // 현재 단계에서는 관리자 전용으로 막고, 이후 신뢰된 서버 이벤트·보상 테이블로 입력 출처를 좁힙니다.
+    [Authorize(Policy = AuthorizationPolicies.AdministratorOnly)]
     [ProducesResponseType(typeof(GrantRewardResponse), StatusCodes.Status201Created)]
     [ProducesResponseType(typeof(GrantRewardResponse), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]

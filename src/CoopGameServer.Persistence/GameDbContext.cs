@@ -1,3 +1,4 @@
+using CoopGameServer.Domain.Accounts;
 using CoopGameServer.Domain.Inventories;
 using CoopGameServer.Domain.Players;
 using CoopGameServer.Domain.Rewards;
@@ -30,6 +31,12 @@ public sealed class GameDbContext : DbContext
     /// LINQ 질의와 추가·수정·삭제의 시작점으로 사용합니다.
     /// </summary>
     public DbSet<Player> Players => Set<Player>();
+
+    /// <summary>
+    /// accounts 테이블에 대응하는 로그인 계정 집합입니다.
+    /// 비밀번호 원문은 저장하지 않고 PasswordHash 열만 사용합니다.
+    /// </summary>
+    public DbSet<Account> Accounts => Set<Account>();
 
     /// <summary>
     /// player_wallets 테이블에 대응하는 플레이어 지갑 집합입니다.
@@ -94,6 +101,45 @@ public sealed class GameDbContext : DbContext
             .HasColumnName("updated_at")
             .HasColumnType("timestamp with time zone")
             .IsRequired();
+
+        var account = modelBuilder.Entity<Account>();
+
+        // Account는 로그인 신원, Player는 게임 상태라는 서로 다른 책임을 갖습니다.
+        // 한 Player에는 로그인 계정 하나만 연결되도록 player_id에도 UNIQUE 인덱스를 둡니다.
+        account.ToTable("accounts");
+        account.HasKey(entity => entity.Id);
+        account.Property(entity => entity.Id)
+            .HasColumnName("account_id")
+            .ValueGeneratedNever();
+        account.Property(entity => entity.PlayerId)
+            .HasColumnName("player_id")
+            .ValueGeneratedNever();
+        account.HasIndex(entity => entity.PlayerId)
+            .IsUnique()
+            .HasDatabaseName("IX_accounts_player_id");
+        account.Property(entity => entity.LoginId)
+            .HasColumnName("login_id")
+            .HasMaxLength(Account.MaxLoginIdLength)
+            .IsRequired();
+        account.HasIndex(entity => entity.LoginId)
+            .IsUnique()
+            .HasDatabaseName("IX_accounts_login_id");
+        account.Property(entity => entity.PasswordHash)
+            .HasColumnName("password_hash")
+            .IsRequired();
+        account.Property(entity => entity.Role)
+            .HasColumnName("role")
+            .HasConversion<string>()
+            .HasMaxLength(20)
+            .IsRequired();
+        account.Property(entity => entity.CreatedAt)
+            .HasColumnName("created_at")
+            .HasColumnType("timestamp with time zone")
+            .IsRequired();
+        account.HasOne<Player>()
+            .WithOne()
+            .HasForeignKey<Account>(entity => entity.PlayerId)
+            .OnDelete(DeleteBehavior.Cascade);
 
         var playerWallet = modelBuilder.Entity<PlayerWallet>();
 

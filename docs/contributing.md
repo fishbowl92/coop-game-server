@@ -12,22 +12,12 @@
 
 ## 커밋 메시지
 
-커밋 첫 줄은 `type: 짧은 변경 요약` 형식으로 작성합니다.
-
-자주 사용하는 `type(변경 종류)`는 다음과 같습니다.
-
-- `feat` — feature(기능): 사용자 또는 게임 기능 추가
-- `fix` — fix(수정): 버그 수정
-- `refactor` — refactor(구조 개선): 동작은 유지하면서 코드 구조 개선
-- `test` — test(검증): 테스트 추가·수정
-- `docs` — documents(문서): 문서만 변경
-- `chore` — chore(자잘한 유지보수 작업): 빌드 설정, 의존성, 개발 환경 변경
-- `ci` — Continuous Integration(지속적 통합): 자동 빌드·테스트 설정 변경
+커밋 첫 줄은 **한국어로 변경한 기능 또는 목적을 바로 알 수 있게** 작성하고, 끝에 마침표를 붙이지 않습니다. 예를 들어 `파티 생성, 조회, 가입, 탈퇴, 해산 HTTP API 구현`처럼 기록합니다. 변경 이력은 GitHub에서 바로 읽히므로 영어 접두사보다 실제 변경 내용을 우선합니다.
 
 예시 명령은 다음과 같습니다.
 
     git add -A
-    git commit -m "test: add reward validation cases"
+    git commit -m "회원 가입, 로그인, JWT 인증과 권한 확인 구현"
     git push
 
 - `git add -A`: 새 파일, 수정 파일, 삭제 파일을 이번 커밋 대상으로 등록합니다.

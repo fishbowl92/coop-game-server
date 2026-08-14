@@ -1,6 +1,8 @@
+using System.Security.Claims;
 using CoopGameServer.Api.Application.Parties;
 using CoopGameServer.Api.Controllers;
 using CoopGameServer.Contracts.Parties;
+using CoopGameServer.Domain.Accounts;
 using CoopGameServer.IntegrationTests.Infrastructure;
 using CoopGameServer.Persistence;
 using Microsoft.AspNetCore.Http;
@@ -25,7 +27,7 @@ public sealed class PartiesControllerTests(OrleansTestClusterFixture fixture)
         var request = new CreatePartyRequest(Guid.NewGuid(), leaderPlayerId);
         await fixture.RegisterPlayersAsync(leaderPlayerId);
         await using var gameDbContext = fixture.CreateDbContext();
-        var controller = CreateController(gameDbContext);
+        var controller = CreateController(gameDbContext, leaderPlayerId);
 
         var firstAction = await controller.CreateParty(request, CancellationToken.None);
         var replayAction = await controller.CreateParty(request, CancellationToken.None);
@@ -50,8 +52,8 @@ public sealed class PartiesControllerTests(OrleansTestClusterFixture fixture)
         await fixture.RegisterPlayersAsync(leaderPlayerId);
         await using var firstDbContext = fixture.CreateDbContext();
         await using var secondDbContext = fixture.CreateDbContext();
-        var firstController = CreateController(firstDbContext);
-        var secondController = CreateController(secondDbContext);
+        var firstController = CreateController(firstDbContext, leaderPlayerId);
+        var secondController = CreateController(secondDbContext, leaderPlayerId);
 
         var actions = await Task.WhenAll(
             firstController.CreateParty(request, CancellationToken.None),
@@ -71,17 +73,19 @@ public sealed class PartiesControllerTests(OrleansTestClusterFixture fixture)
         var memberPlayerId = Guid.NewGuid();
         await fixture.RegisterPlayersAsync(leaderPlayerId, memberPlayerId);
         await using var gameDbContext = fixture.CreateDbContext();
-        var controller = CreateController(gameDbContext);
+        var controller = CreateController(gameDbContext, leaderPlayerId);
         var createAction = await controller.CreateParty(
             new CreatePartyRequest(Guid.NewGuid(), leaderPlayerId),
             CancellationToken.None);
         var partyId = GetSuccessResponse(createAction).PartyId;
 
+        SetCurrentPlayer(controller, memberPlayerId);
         var joinAction = await controller.JoinParty(
             partyId,
             new JoinPartyRequest(Guid.NewGuid(), memberPlayerId),
             CancellationToken.None);
         var getAction = await controller.GetPartyById(partyId, CancellationToken.None);
+        SetCurrentPlayer(controller, leaderPlayerId);
         var leaveAction = await controller.LeaveParty(
             partyId,
             new LeavePartyRequest(Guid.NewGuid(), leaderPlayerId),
@@ -101,7 +105,7 @@ public sealed class PartiesControllerTests(OrleansTestClusterFixture fixture)
     public async Task InvalidAndMissingResourcesMapToBadRequestAndNotFound()
     {
         await using var gameDbContext = fixture.CreateDbContext();
-        var controller = CreateController(gameDbContext);
+        var controller = CreateController(gameDbContext, Guid.NewGuid(), isAdministrator: true);
 
         var invalidAction = await controller.CreateParty(
             new CreatePartyRequest(Guid.Empty, Guid.NewGuid()),
@@ -130,11 +134,12 @@ public sealed class PartiesControllerTests(OrleansTestClusterFixture fixture)
         var memberPlayerId = Guid.NewGuid();
         await fixture.RegisterPlayersAsync(leaderPlayerId, memberPlayerId);
         await using var gameDbContext = fixture.CreateDbContext();
-        var controller = CreateController(gameDbContext);
+        var controller = CreateController(gameDbContext, leaderPlayerId);
         var createAction = await controller.CreateParty(
             new CreatePartyRequest(Guid.NewGuid(), leaderPlayerId),
             CancellationToken.None);
         var partyId = GetSuccessResponse(createAction).PartyId;
+        SetCurrentPlayer(controller, memberPlayerId);
         await controller.JoinParty(
             partyId,
             new JoinPartyRequest(Guid.NewGuid(), memberPlayerId),
@@ -154,10 +159,40 @@ public sealed class PartiesControllerTests(OrleansTestClusterFixture fixture)
     }
 
     /// <summary>테스트 클러스터와 테스트 DB를 사용하는 Controller를 구성합니다.</summary>
-    private PartiesController CreateController(GameDbContext gameDbContext)
+    private PartiesController CreateController(
+        GameDbContext gameDbContext,
+        Guid playerId,
+        bool isAdministrator = false)
     {
         var partyService = new PartyService(fixture.Cluster.GrainFactory, gameDbContext);
-        return new PartiesController(partyService);
+        var controller = new PartiesController(partyService);
+        SetCurrentPlayer(controller, playerId, isAdministrator);
+        return controller;
+    }
+
+    /// <summary>직접 호출하는 Controller 테스트에 JWT 검증 후의 현재 Player Claim을 넣습니다.</summary>
+    private static void SetCurrentPlayer(
+        PartiesController controller,
+        Guid playerId,
+        bool isAdministrator = false)
+    {
+        var claims = new List<Claim>
+        {
+            new(ClaimTypes.NameIdentifier, playerId.ToString()),
+        };
+
+        if (isAdministrator)
+        {
+            claims.Add(new Claim(ClaimTypes.Role, AccountRole.Administrator.ToString()));
+        }
+
+        controller.ControllerContext = new ControllerContext
+        {
+            HttpContext = new DefaultHttpContext
+            {
+                User = new ClaimsPrincipal(new ClaimsIdentity(claims, "test-jwt")),
+            },
+        };
     }
 
     /// <summary>200 또는 201의 ObjectResult에서 파티 응답 본문을 꺼냅니다.</summary>
