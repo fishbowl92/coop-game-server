@@ -6,111 +6,169 @@ namespace CoopGameServer.Grains.Matchmaking;
 /// MatchQueueGrain 한 개가 소유하는 대기 순서, 티켓 상태, 멱등성 요청 기록과 4인 조합 규칙입니다.
 /// </summary>
 /// <remarks>
-/// 현재 단계에서는 메모리에만 존재하므로 Silo가 재시작되면 사라집니다.
-/// 규칙을 충분히 검증한 다음 작업에서 PostgreSQL 영속 저장을 연결합니다.
+/// 이 객체는 게임 규칙과 메모리 상태만 담당합니다.
+/// PostgreSQL 읽기·쓰기와 트랜잭션은 MatchQueueGrain이 담당하므로,
+/// DB 저장이 실패했을 때 실제 Grain 메모리를 이전 상태로 유지할 수 있습니다.
 /// </remarks>
 internal sealed class MatchQueueState
 {
     /// <summary>이번 프로젝트의 협동 게임 방 정원입니다.</summary>
     internal const int TargetPlayerCount = 4;
 
-    private readonly Dictionary<Guid, MatchQueueTicket> _ticketsByPartyId = [];
-    private readonly List<Guid> _queuedPartyIds = [];
-    private readonly Dictionary<Guid, StoredRequest> _requests = [];
+    private readonly Dictionary<Guid, MatchQueueTicket> _ticketsById = [];
+    private readonly List<Guid> _queuedTicketIds = [];
+    private readonly Dictionary<Guid, MatchQueueStoredRequest> _requests = [];
+    private long _nextQueueOrder;
 
-    /// <summary>파티 전체를 분할하지 않고 하나의 대기열 단위로 등록합니다.</summary>
+    /// <summary>
+    /// PostgreSQL에서 복원한 티켓과 요청 기록으로 메모리 규칙 객체를 만듭니다.
+    /// </summary>
+    internal static MatchQueueState Restore(
+        IEnumerable<MatchQueueTicket> tickets,
+        IEnumerable<MatchQueueStoredRequest> requests)
+    {
+        var state = new MatchQueueState();
+
+        foreach (var ticket in tickets.OrderBy(ticket => ticket.QueueOrder))
+        {
+            state._ticketsById.Add(ticket.TicketId, CloneTicket(ticket));
+            if (ticket.Status == MatchQueueTicketStatus.Queued)
+            {
+                state._queuedTicketIds.Add(ticket.TicketId);
+            }
+        }
+
+        state._nextQueueOrder = state._ticketsById.Count == 0
+            ? 0
+            : state._ticketsById.Values.Max(ticket => ticket.QueueOrder);
+
+        foreach (var request in requests)
+        {
+            state._requests.Add(request.RequestId, request.Copy());
+        }
+
+        return state;
+    }
+
+    /// <summary>
+    /// DB 저장 실패 시 원본 메모리 상태를 보존할 수 있도록 명령 적용 전 깊은 복사본을 만듭니다.
+    /// </summary>
+    internal MatchQueueState Clone() => Restore(GetTickets(), GetStoredRequests());
+
+    /// <summary>PostgreSQL 동기화에 사용할 모든 티켓의 방어적 복사본을 반환합니다.</summary>
+    internal MatchQueueTicket[] GetTickets()
+    {
+        return _ticketsById.Values
+            .OrderBy(ticket => ticket.QueueOrder)
+            .Select(CloneTicket)
+            .ToArray();
+    }
+
+    /// <summary>PostgreSQL 동기화에 사용할 멱등성 요청 기록의 복사본을 반환합니다.</summary>
+    internal MatchQueueStoredRequest[] GetStoredRequests()
+    {
+        return _requests.Values
+            .OrderBy(request => request.CreatedAt)
+            .Select(request => request.Copy())
+            .ToArray();
+    }
+
+    /// <summary>사전 구성 파티 또는 솔로 참가자를 하나의 대기 티켓으로 등록합니다.</summary>
     internal MatchQueueCommandResult Enqueue(string queueKey, MatchQueueEntryRequest request)
     {
         if (request.RequestId == Guid.Empty)
         {
-            return Failure(request.PartyId, MatchQueueCommandError.InvalidRequestId);
+            return Failure(ticketId: null, MatchQueueCommandError.InvalidRequestId);
         }
 
         if (_requests.TryGetValue(request.RequestId, out var storedRequest))
         {
             return storedRequest.Matches(request)
                 ? Replay(storedRequest.Result)
-                : Failure(request.PartyId, MatchQueueCommandError.RequestIdConflict);
+                : Failure(ticketId: null, MatchQueueCommandError.RequestIdConflict);
         }
 
         var validationError = ValidateEnqueueRequest(request);
         if (validationError is not MatchQueueCommandError.None)
         {
-            return Store(request, Failure(request.PartyId, validationError));
+            return Store(request, Failure(ticketId: null, validationError));
         }
 
-        if (_ticketsByPartyId.TryGetValue(request.PartyId, out var currentTicket))
+        if (request.EntryKind == MatchQueueEntryKind.PreformedParty)
         {
-            var partyError = currentTicket.Status switch
-            {
-                MatchQueueTicketStatus.Queued => MatchQueueCommandError.PartyAlreadyQueued,
-                MatchQueueTicketStatus.Matched => MatchQueueCommandError.PartyAlreadyMatched,
-                _ => MatchQueueCommandError.None,
-            };
+            var existingPartyTicket = _ticketsById.Values.SingleOrDefault(ticket =>
+                ticket.EntryKind == MatchQueueEntryKind.PreformedParty
+                && ticket.PartyId == request.PartyId
+                && ticket.Status is MatchQueueTicketStatus.Queued or MatchQueueTicketStatus.Matched);
 
-            if (partyError is not MatchQueueCommandError.None)
+            if (existingPartyTicket is not null)
             {
-                return Store(request, Failure(request.PartyId, partyError));
+                var partyError = existingPartyTicket.Status == MatchQueueTicketStatus.Queued
+                    ? MatchQueueCommandError.PartyAlreadyQueued
+                    : MatchQueueCommandError.PartyAlreadyMatched;
+                return Store(request, Failure(existingPartyTicket.TicketId, partyError));
             }
         }
 
-        if (HasPlayerInAnotherCurrentTicket(request.PartyId, request.MemberPlayerIds))
+        if (HasPlayerInAnotherCurrentTicket(request.MemberPlayerIds))
         {
-            return Store(request, Failure(request.PartyId, MatchQueueCommandError.PlayerAlreadyQueued));
+            return Store(request, Failure(ticketId: null, MatchQueueCommandError.PlayerAlreadyQueued));
         }
 
         // 호출자가 전달한 배열을 복사하여 외부 변경이 Grain 내부 상태에 영향을 주지 못하게 합니다.
         var ticket = new MatchQueueTicket(
             Guid.NewGuid(),
             queueKey,
+            request.EntryKind,
             request.PartyId,
             request.LeaderPlayerId,
             request.MemberPlayerIds.ToArray(),
             MatchQueueTicketStatus.Queued,
             RoomId: null,
-            DateTimeOffset.UtcNow);
+            DateTimeOffset.UtcNow,
+            QueueOrder: checked(++_nextQueueOrder));
 
-        _ticketsByPartyId[request.PartyId] = ticket;
-        _queuedPartyIds.Add(request.PartyId);
+        _ticketsById.Add(ticket.TicketId, ticket);
+        _queuedTicketIds.Add(ticket.TicketId);
 
         var match = TryCreateMatch(queueKey);
-        var currentResultTicket = CloneTicket(_ticketsByPartyId[request.PartyId]);
-        return Store(request, Success(currentResultTicket, match));
+        var resultTicket = CloneTicket(_ticketsById[ticket.TicketId]);
+        return Store(request, Success(resultTicket, match));
     }
 
-    /// <summary>리더만 아직 대기 중인 티켓을 취소할 수 있도록 처리합니다.</summary>
+    /// <summary>티켓을 소유한 리더만 아직 대기 중인 매칭을 취소할 수 있도록 처리합니다.</summary>
     internal MatchQueueCommandResult Cancel(CancelMatchQueueRequest request)
     {
         if (request.RequestId == Guid.Empty)
         {
-            return Failure(request.PartyId, MatchQueueCommandError.InvalidRequestId);
+            return Failure(ticketId: null, MatchQueueCommandError.InvalidRequestId);
         }
 
         if (_requests.TryGetValue(request.RequestId, out var storedRequest))
         {
             return storedRequest.Matches(request)
                 ? Replay(storedRequest.Result)
-                : Failure(request.PartyId, MatchQueueCommandError.RequestIdConflict);
+                : Failure(ticketId: request.TicketId, MatchQueueCommandError.RequestIdConflict);
         }
 
-        if (request.PartyId == Guid.Empty)
+        if (request.TicketId == Guid.Empty)
         {
-            return Store(request, Failure(request.PartyId, MatchQueueCommandError.InvalidPartyId));
+            return Store(request, Failure(ticketId: null, MatchQueueCommandError.TicketNotFound));
         }
 
-        if (request.LeaderPlayerId == Guid.Empty)
+        if (request.RequesterPlayerId == Guid.Empty)
         {
-            return Store(request, Failure(request.PartyId, MatchQueueCommandError.InvalidLeaderPlayerId));
+            return Store(request, Failure(request.TicketId, MatchQueueCommandError.InvalidLeaderPlayerId));
         }
 
-        if (!_ticketsByPartyId.TryGetValue(request.PartyId, out var ticket))
+        if (!_ticketsById.TryGetValue(request.TicketId, out var ticket))
         {
-            return Store(request, Failure(request.PartyId, MatchQueueCommandError.TicketNotFound));
+            return Store(request, Failure(ticketId: null, MatchQueueCommandError.TicketNotFound));
         }
 
-        if (ticket.LeaderPlayerId != request.LeaderPlayerId)
+        if (ticket.LeaderPlayerId != request.RequesterPlayerId)
         {
-            return Store(request, Failure(request.PartyId, MatchQueueCommandError.OnlyLeaderCanCancel));
+            return Store(request, Failure(ticket.TicketId, MatchQueueCommandError.OnlyLeaderCanCancel));
         }
 
         var statusError = ticket.Status switch
@@ -122,7 +180,7 @@ internal sealed class MatchQueueState
 
         if (statusError is not MatchQueueCommandError.None)
         {
-            return Store(request, Failure(request.PartyId, statusError));
+            return Store(request, Failure(ticket.TicketId, statusError));
         }
 
         var cancelledTicket = ticket with
@@ -131,16 +189,16 @@ internal sealed class MatchQueueState
             MemberPlayerIds = ticket.MemberPlayerIds.ToArray(),
         };
 
-        _ticketsByPartyId[request.PartyId] = cancelledTicket;
-        _queuedPartyIds.Remove(request.PartyId);
+        _ticketsById[ticket.TicketId] = cancelledTicket;
+        _queuedTicketIds.Remove(ticket.TicketId);
 
         return Store(request, Success(CloneTicket(cancelledTicket), match: null));
     }
 
-    /// <summary>특정 파티 티켓의 방어적 복사본을 반환합니다.</summary>
-    internal MatchQueueTicket? GetTicket(Guid partyId)
+    /// <summary>특정 티켓의 방어적 복사본을 반환합니다.</summary>
+    internal MatchQueueTicket? GetTicket(Guid ticketId)
     {
-        return _ticketsByPartyId.TryGetValue(partyId, out var ticket)
+        return _ticketsById.TryGetValue(ticketId, out var ticket)
             ? CloneTicket(ticket)
             : null;
     }
@@ -148,8 +206,8 @@ internal sealed class MatchQueueState
     /// <summary>현재 대기 중인 티켓만 등록 순서대로 복사하여 반환합니다.</summary>
     internal MatchQueueSnapshot GetSnapshot(string queueKey)
     {
-        var queuedTickets = _queuedPartyIds
-            .Select(partyId => CloneTicket(_ticketsByPartyId[partyId]))
+        var queuedTickets = _queuedTicketIds
+            .Select(ticketId => CloneTicket(_ticketsById[ticketId]))
             .ToArray();
 
         return new MatchQueueSnapshot(queueKey, TargetPlayerCount, queuedTickets);
@@ -157,11 +215,6 @@ internal sealed class MatchQueueState
 
     private static MatchQueueCommandError ValidateEnqueueRequest(MatchQueueEntryRequest request)
     {
-        if (request.PartyId == Guid.Empty)
-        {
-            return MatchQueueCommandError.InvalidPartyId;
-        }
-
         if (request.LeaderPlayerId == Guid.Empty)
         {
             return MatchQueueCommandError.InvalidLeaderPlayerId;
@@ -175,52 +228,75 @@ internal sealed class MatchQueueState
             return MatchQueueCommandError.InvalidMembers;
         }
 
-        return request.MemberPlayerIds.Contains(request.LeaderPlayerId)
-            ? MatchQueueCommandError.None
-            : MatchQueueCommandError.LeaderNotMember;
+        if (!request.MemberPlayerIds.Contains(request.LeaderPlayerId))
+        {
+            return MatchQueueCommandError.LeaderNotMember;
+        }
+
+        if (!Enum.IsDefined(request.EntryKind))
+        {
+            return MatchQueueCommandError.InvalidEntryShape;
+        }
+
+        if (request.EntryKind == MatchQueueEntryKind.PreformedParty
+            && (!request.PartyId.HasValue || request.PartyId.Value == Guid.Empty))
+        {
+            return MatchQueueCommandError.InvalidEntryShape;
+        }
+
+        if (request.EntryKind == MatchQueueEntryKind.SoloPlayer
+            && (request.PartyId.HasValue || request.MemberPlayerIds.Length != 1))
+        {
+            return MatchQueueCommandError.InvalidEntryShape;
+        }
+
+        return MatchQueueCommandError.None;
     }
 
-    private bool HasPlayerInAnotherCurrentTicket(Guid partyId, IEnumerable<Guid> memberPlayerIds)
+    private bool HasPlayerInAnotherCurrentTicket(IEnumerable<Guid> memberPlayerIds)
     {
         var requestedPlayerIds = memberPlayerIds.ToHashSet();
 
-        return _ticketsByPartyId.Values.Any(ticket =>
-            ticket.PartyId != partyId
-            && ticket.Status is MatchQueueTicketStatus.Queued or MatchQueueTicketStatus.Matched
+        return _ticketsById.Values.Any(ticket =>
+            ticket.Status is MatchQueueTicketStatus.Queued or MatchQueueTicketStatus.Matched
             && ticket.MemberPlayerIds.Any(requestedPlayerIds.Contains));
     }
 
     /// <summary>
-    /// 가장 오래 기다린 파티를 반드시 포함하면서 정확히 4명이 되는 가장 이른 조합을 찾습니다.
+    /// 가장 오래 기다린 티켓을 반드시 포함하면서 정확히 4명이 되는 가장 이른 조합을 찾습니다.
     /// </summary>
     private MatchAssignment? TryCreateMatch(string queueKey)
     {
-        if (_queuedPartyIds.Count == 0)
+        if (_queuedTicketIds.Count == 0)
         {
             return null;
         }
 
-        var oldestPartyId = _queuedPartyIds[0];
-        var oldestTicket = _ticketsByPartyId[oldestPartyId];
-        var selectedPartyIds = new List<Guid> { oldestPartyId };
+        var oldestTicketId = _queuedTicketIds[0];
+        var oldestTicket = _ticketsById[oldestTicketId];
+        var selectedTicketIds = new List<Guid> { oldestTicketId };
         var remainingPlayerCount = TargetPlayerCount - oldestTicket.MemberPlayerIds.Length;
 
-        if (!TrySelectCombination(startIndex: 1, remainingPlayerCount, selectedPartyIds))
+        if (!TrySelectCombination(startIndex: 1, remainingPlayerCount, selectedTicketIds))
         {
             return null;
         }
 
         var roomId = Guid.NewGuid();
         var createdAt = DateTimeOffset.UtcNow;
-        var selectedPartyIdSet = selectedPartyIds.ToHashSet();
-        var playerIds = selectedPartyIds
-            .SelectMany(partyId => _ticketsByPartyId[partyId].MemberPlayerIds)
+        var selectedTicketIdSet = selectedTicketIds.ToHashSet();
+        var selectedTickets = selectedTicketIds.Select(ticketId => _ticketsById[ticketId]).ToArray();
+        var partyIds = selectedTickets
+            .Where(ticket => ticket.EntryKind == MatchQueueEntryKind.PreformedParty)
+            .Select(ticket => ticket.PartyId!.Value)
+            .ToArray();
+        var playerIds = selectedTickets
+            .SelectMany(ticket => ticket.MemberPlayerIds)
             .ToArray();
 
-        foreach (var partyId in selectedPartyIds)
+        foreach (var ticket in selectedTickets)
         {
-            var ticket = _ticketsByPartyId[partyId];
-            _ticketsByPartyId[partyId] = ticket with
+            _ticketsById[ticket.TicketId] = ticket with
             {
                 Status = MatchQueueTicketStatus.Matched,
                 RoomId = roomId,
@@ -228,45 +304,43 @@ internal sealed class MatchQueueState
             };
         }
 
-        _queuedPartyIds.RemoveAll(selectedPartyIdSet.Contains);
+        _queuedTicketIds.RemoveAll(selectedTicketIdSet.Contains);
 
         return new MatchAssignment(
             roomId,
             queueKey,
-            selectedPartyIds.ToArray(),
+            partyIds,
             playerIds,
             createdAt);
     }
 
-    /// <summary>
-    /// 대기 순서대로 후보를 선택하는 깊이 우선 탐색으로 남은 인원을 정확히 채웁니다.
-    /// </summary>
+    /// <summary>대기 순서대로 후보를 선택하는 깊이 우선 탐색으로 남은 인원을 정확히 채웁니다.</summary>
     private bool TrySelectCombination(
         int startIndex,
         int remainingPlayerCount,
-        List<Guid> selectedPartyIds)
+        List<Guid> selectedTicketIds)
     {
         if (remainingPlayerCount == 0)
         {
             return true;
         }
 
-        for (var index = startIndex; index < _queuedPartyIds.Count; index++)
+        for (var index = startIndex; index < _queuedTicketIds.Count; index++)
         {
-            var candidatePartyId = _queuedPartyIds[index];
-            var candidatePlayerCount = _ticketsByPartyId[candidatePartyId].MemberPlayerIds.Length;
+            var candidateTicketId = _queuedTicketIds[index];
+            var candidatePlayerCount = _ticketsById[candidateTicketId].MemberPlayerIds.Length;
             if (candidatePlayerCount > remainingPlayerCount)
             {
                 continue;
             }
 
-            selectedPartyIds.Add(candidatePartyId);
-            if (TrySelectCombination(index + 1, remainingPlayerCount - candidatePlayerCount, selectedPartyIds))
+            selectedTicketIds.Add(candidateTicketId);
+            if (TrySelectCombination(index + 1, remainingPlayerCount - candidatePlayerCount, selectedTicketIds))
             {
                 return true;
             }
 
-            selectedPartyIds.RemoveAt(selectedPartyIds.Count - 1);
+            selectedTicketIds.RemoveAt(selectedTicketIds.Count - 1);
         }
 
         return false;
@@ -276,7 +350,7 @@ internal sealed class MatchQueueState
         MatchQueueEntryRequest request,
         MatchQueueCommandResult result)
     {
-        _requests[request.RequestId] = StoredRequest.ForEnqueue(request, CloneResult(result));
+        _requests[request.RequestId] = MatchQueueStoredRequest.ForEnqueue(request, CloneResult(result));
         return result;
     }
 
@@ -284,22 +358,20 @@ internal sealed class MatchQueueState
         CancelMatchQueueRequest request,
         MatchQueueCommandResult result)
     {
-        _requests[request.RequestId] = StoredRequest.ForCancel(request, CloneResult(result));
+        _requests[request.RequestId] = MatchQueueStoredRequest.ForCancel(request, CloneResult(result));
         return result;
     }
 
-    private MatchQueueCommandResult Failure(Guid partyId, MatchQueueCommandError error)
+    private MatchQueueCommandResult Failure(Guid? ticketId, MatchQueueCommandError error)
     {
         return new MatchQueueCommandResult(
             IsReplay: false,
             Error: error,
-            Ticket: GetTicket(partyId),
+            Ticket: ticketId is { } value ? GetTicket(value) : null,
             Match: null);
     }
 
-    private static MatchQueueCommandResult Success(
-        MatchQueueTicket ticket,
-        MatchAssignment? match)
+    private static MatchQueueCommandResult Success(MatchQueueTicket ticket, MatchAssignment? match)
     {
         return new MatchQueueCommandResult(
             IsReplay: false,
@@ -338,58 +410,95 @@ internal sealed class MatchQueueState
                 PlayerIds = match.PlayerIds.ToArray(),
             };
     }
+}
 
-    /// <summary>동일 requestId가 같은 명령인지 판별하기 위해 최초 입력과 결과를 함께 보관합니다.</summary>
-    private sealed record StoredRequest(
-        MatchQueueCommandKind CommandKind,
-        Guid PartyId,
-        Guid LeaderPlayerId,
-        Guid[] MemberPlayerIds,
-        MatchQueueCommandResult Result)
+/// <summary>대기열 요청의 종류를 구분해 같은 requestId의 내용 충돌을 판별합니다.</summary>
+internal enum MatchQueueCommandKind
+{
+    Enqueue = 0,
+    Cancel = 1,
+}
+
+/// <summary>
+/// Silo 재시작 뒤에도 멱등성 재생을 유지하기 위해 저장하는 최초 요청과 결과입니다.
+/// </summary>
+internal sealed record MatchQueueStoredRequest(
+    Guid RequestId,
+    MatchQueueCommandKind CommandKind,
+    MatchQueueEntryRequest? EnqueueRequest,
+    CancelMatchQueueRequest? CancelRequest,
+    MatchQueueCommandResult Result,
+    DateTimeOffset CreatedAt)
+{
+    internal static MatchQueueStoredRequest ForEnqueue(
+        MatchQueueEntryRequest request,
+        MatchQueueCommandResult result)
     {
-        internal static StoredRequest ForEnqueue(
-            MatchQueueEntryRequest request,
-            MatchQueueCommandResult result)
-        {
-            return new StoredRequest(
-                MatchQueueCommandKind.Enqueue,
-                request.PartyId,
-                request.LeaderPlayerId,
-                request.MemberPlayerIds?.ToArray() ?? [],
-                result);
-        }
-
-        internal static StoredRequest ForCancel(
-            CancelMatchQueueRequest request,
-            MatchQueueCommandResult result)
-        {
-            return new StoredRequest(
-                MatchQueueCommandKind.Cancel,
-                request.PartyId,
-                request.LeaderPlayerId,
-                [],
-                result);
-        }
-
-        internal bool Matches(MatchQueueEntryRequest request)
-        {
-            return CommandKind == MatchQueueCommandKind.Enqueue
-                && PartyId == request.PartyId
-                && LeaderPlayerId == request.LeaderPlayerId
-                && MemberPlayerIds.SequenceEqual(request.MemberPlayerIds ?? []);
-        }
-
-        internal bool Matches(CancelMatchQueueRequest request)
-        {
-            return CommandKind == MatchQueueCommandKind.Cancel
-                && PartyId == request.PartyId
-                && LeaderPlayerId == request.LeaderPlayerId;
-        }
+        return new MatchQueueStoredRequest(
+            request.RequestId,
+            MatchQueueCommandKind.Enqueue,
+            request with { MemberPlayerIds = request.MemberPlayerIds.ToArray() },
+            CancelRequest: null,
+            result,
+            DateTimeOffset.UtcNow);
     }
 
-    private enum MatchQueueCommandKind
+    internal static MatchQueueStoredRequest ForCancel(
+        CancelMatchQueueRequest request,
+        MatchQueueCommandResult result)
     {
-        Enqueue = 0,
-        Cancel = 1,
+        return new MatchQueueStoredRequest(
+            request.RequestId,
+            MatchQueueCommandKind.Cancel,
+            EnqueueRequest: null,
+            request,
+            result,
+            DateTimeOffset.UtcNow);
+    }
+
+    internal bool Matches(MatchQueueEntryRequest request)
+    {
+        return CommandKind == MatchQueueCommandKind.Enqueue
+            && EnqueueRequest is { } storedRequest
+            && storedRequest.EntryKind == request.EntryKind
+            && storedRequest.PartyId == request.PartyId
+            && storedRequest.LeaderPlayerId == request.LeaderPlayerId
+            && storedRequest.MemberPlayerIds.SequenceEqual(request.MemberPlayerIds ?? []);
+    }
+
+    internal bool Matches(CancelMatchQueueRequest request)
+    {
+        return CommandKind == MatchQueueCommandKind.Cancel
+            && CancelRequest is { } storedRequest
+            && storedRequest.TicketId == request.TicketId
+            && storedRequest.RequesterPlayerId == request.RequesterPlayerId;
+    }
+
+    internal MatchQueueStoredRequest Copy()
+    {
+        return this with
+        {
+            EnqueueRequest = EnqueueRequest is null
+                ? null
+                : EnqueueRequest with { MemberPlayerIds = EnqueueRequest.MemberPlayerIds.ToArray() },
+            Result = CloneResult(Result),
+        };
+    }
+
+    private static MatchQueueCommandResult CloneResult(MatchQueueCommandResult result)
+    {
+        return new MatchQueueCommandResult(
+            result.IsReplay,
+            result.Error,
+            result.Ticket is null
+                ? null
+                : result.Ticket with { MemberPlayerIds = result.Ticket.MemberPlayerIds.ToArray() },
+            result.Match is null
+                ? null
+                : result.Match with
+                {
+                    PartyIds = result.Match.PartyIds.ToArray(),
+                    PlayerIds = result.Match.PlayerIds.ToArray(),
+                });
     }
 }

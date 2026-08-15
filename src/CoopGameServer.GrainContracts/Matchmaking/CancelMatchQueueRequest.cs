@@ -4,5 +4,5 @@ namespace CoopGameServer.GrainContracts.Matchmaking;
 [GenerateSerializer]
 public sealed record CancelMatchQueueRequest(
     [property: Id(0)] Guid RequestId,
-    [property: Id(1)] Guid PartyId,
-    [property: Id(2)] Guid LeaderPlayerId);
+    [property: Id(1)] Guid TicketId,
+    [property: Id(2)] Guid RequesterPlayerId);

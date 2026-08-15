@@ -15,8 +15,8 @@ public interface IMatchQueueGrain : IGrainWithStringKey
     /// <summary>아직 매칭되지 않은 파티의 대기를 취소합니다.</summary>
     Task<MatchQueueCommandResult> CancelAsync(CancelMatchQueueRequest request);
 
-    /// <summary>특정 파티의 현재 매칭 티켓을 조회합니다.</summary>
-    Task<MatchQueueTicket?> GetTicketAsync(Guid partyId);
+    /// <summary>특정 대기 티켓의 현재 상태를 조회합니다.</summary>
+    Task<MatchQueueTicket?> GetTicketAsync(Guid ticketId);
 
     /// <summary>현재 매칭 조건에서 대기 중인 파티를 등록 순서대로 조회합니다.</summary>
     Task<MatchQueueSnapshot> GetSnapshotAsync();

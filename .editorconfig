@@ -25,3 +25,7 @@ indent_size = 2
 
 [*.md]
 trim_trailing_whitespace = false
+
+[src/CoopGameServer.Persistence/Migrations/*.cs]
+# EF Core가 생성한 migration SQL 배열은 사람이 반복 호출하는 코드가 아니므로 CA1861 검사 대상에서 제외합니다.
+dotnet_diagnostic.CA1861.severity = none

@@ -3,6 +3,7 @@ using CoopGameServer.Domain.Inventories;
 using CoopGameServer.Domain.Players;
 using CoopGameServer.Domain.Rewards;
 using CoopGameServer.Domain.Wallets;
+using CoopGameServer.Persistence.Matchmaking;
 using CoopGameServer.Persistence.Parties;
 using Microsoft.EntityFrameworkCore;
 
@@ -61,6 +62,15 @@ public sealed class GameDbContext : DbContext
 
     /// <summary>party_requests 테이블에 대응하는 파티 명령 처리 기록 집합입니다.</summary>
     public DbSet<PartyRequestRecord> PartyRequests => Set<PartyRequestRecord>();
+
+    /// <summary>match_queue_tickets 테이블에 대응하는 매칭 대기 티켓 집합입니다.</summary>
+    public DbSet<MatchQueueTicketRecord> MatchQueueTickets => Set<MatchQueueTicketRecord>();
+
+    /// <summary>match_queue_members 테이블에 대응하는 티켓별 참가자 집합입니다.</summary>
+    public DbSet<MatchQueueMemberRecord> MatchQueueMembers => Set<MatchQueueMemberRecord>();
+
+    /// <summary>match_queue_requests 테이블에 대응하는 매칭 대기열 명령 기록 집합입니다.</summary>
+    public DbSet<MatchQueueRequestRecord> MatchQueueRequests => Set<MatchQueueRequestRecord>();
 
     /// <summary>
     /// C# Player 객체와 PostgreSQL players 테이블 사이의 세부 규칙을 정의합니다.
@@ -243,6 +253,7 @@ public sealed class GameDbContext : DbContext
             .OnDelete(DeleteBehavior.Restrict);
 
         ConfigurePartyPersistence(modelBuilder);
+        ConfigureMatchQueuePersistence(modelBuilder);
     }
 
     /// <summary>
@@ -338,5 +349,114 @@ public sealed class GameDbContext : DbContext
 
         // party_requests는 실패한 Create/Join도 저장해야 하므로 parties와 외래 키로 묶지 않습니다.
         // 그래야 아직 존재하지 않는 파티에 대한 최초 실패 응답도 재시작 뒤 동일하게 재생할 수 있습니다.
+    }
+
+    /// <summary>
+    /// 매칭 대기 티켓·멤버·멱등성 요청 기록을 PostgreSQL 테이블에 저장하는 규칙을 정의합니다.
+    /// </summary>
+    private static void ConfigureMatchQueuePersistence(ModelBuilder modelBuilder)
+    {
+        var ticket = modelBuilder.Entity<MatchQueueTicketRecord>();
+
+        ticket.ToTable(
+            "match_queue_tickets",
+            table =>
+            {
+                table.HasCheckConstraint("CK_match_queue_tickets_entry_kind", "entry_kind IN (0, 1)");
+                table.HasCheckConstraint("CK_match_queue_tickets_status", "status IN (0, 1, 2)");
+                table.HasCheckConstraint("CK_match_queue_tickets_queue_order_positive", "queue_order > 0");
+                table.HasCheckConstraint(
+                    "CK_match_queue_tickets_entry_shape",
+                    "(entry_kind = 0 AND party_id IS NOT NULL) OR (entry_kind = 1 AND party_id IS NULL)");
+            });
+        ticket.HasKey(entity => entity.TicketId);
+        ticket.Property(entity => entity.TicketId)
+            .HasColumnName("ticket_id")
+            .ValueGeneratedNever();
+        ticket.Property(entity => entity.QueueKey)
+            .HasColumnName("queue_key")
+            .HasMaxLength(100)
+            .IsRequired();
+        ticket.Property(entity => entity.EntryKind)
+            .HasColumnName("entry_kind")
+            .IsRequired();
+        ticket.Property(entity => entity.PartyId)
+            .HasColumnName("party_id");
+        ticket.Property(entity => entity.LeaderPlayerId)
+            .HasColumnName("leader_player_id")
+            .ValueGeneratedNever();
+        ticket.Property(entity => entity.Status)
+            .HasColumnName("status")
+            .IsRequired();
+        ticket.Property(entity => entity.RoomId)
+            .HasColumnName("room_id");
+        ticket.Property(entity => entity.EnqueuedAt)
+            .HasColumnName("enqueued_at")
+            .HasColumnType("timestamp with time zone")
+            .IsRequired();
+        ticket.Property(entity => entity.QueueOrder)
+            .HasColumnName("queue_order")
+            .HasColumnType("bigint")
+            .IsRequired();
+        ticket.HasIndex(entity => new { entity.QueueKey, entity.Status, entity.QueueOrder })
+            .HasDatabaseName("IX_match_queue_tickets_queue_key_status_queue_order");
+        ticket.HasIndex(entity => new { entity.QueueKey, entity.QueueOrder })
+            .IsUnique()
+            .HasDatabaseName("IX_match_queue_tickets_queue_key_queue_order");
+        ticket.HasIndex(entity => new { entity.QueueKey, entity.PartyId })
+            .HasDatabaseName("IX_match_queue_tickets_queue_key_party_id");
+
+        var member = modelBuilder.Entity<MatchQueueMemberRecord>();
+
+        member.ToTable(
+            "match_queue_members",
+            table => table.HasCheckConstraint("CK_match_queue_members_order_nonnegative", "member_order >= 0"));
+        member.HasKey(entity => new { entity.TicketId, entity.PlayerId });
+        member.Property(entity => entity.TicketId)
+            .HasColumnName("ticket_id")
+            .ValueGeneratedNever();
+        member.Property(entity => entity.PlayerId)
+            .HasColumnName("player_id")
+            .ValueGeneratedNever();
+        member.Property(entity => entity.MemberOrder)
+            .HasColumnName("member_order")
+            .IsRequired();
+        member.HasIndex(entity => new { entity.TicketId, entity.MemberOrder })
+            .IsUnique()
+            .HasDatabaseName("IX_match_queue_members_ticket_id_member_order");
+        member.HasOne<MatchQueueTicketRecord>()
+            .WithMany()
+            .HasForeignKey(entity => entity.TicketId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        var request = modelBuilder.Entity<MatchQueueRequestRecord>();
+
+        request.ToTable("match_queue_requests");
+        request.HasKey(entity => entity.RequestId);
+        request.Property(entity => entity.RequestId)
+            .HasColumnName("request_id")
+            .ValueGeneratedNever();
+        request.Property(entity => entity.QueueKey)
+            .HasColumnName("queue_key")
+            .HasMaxLength(100)
+            .IsRequired();
+        request.Property(entity => entity.CommandKind)
+            .HasColumnName("command_kind")
+            .HasMaxLength(20)
+            .IsRequired();
+        request.Property(entity => entity.RequestPayloadJson)
+            .HasColumnName("request_payload_json")
+            .HasColumnType("jsonb")
+            .IsRequired();
+        request.Property(entity => entity.ResultPayloadJson)
+            .HasColumnName("result_payload_json")
+            .HasColumnType("jsonb")
+            .IsRequired();
+        request.Property(entity => entity.CreatedAt)
+            .HasColumnName("created_at")
+            .HasColumnType("timestamp with time zone")
+            .IsRequired();
+        request.HasIndex(entity => entity.QueueKey)
+            .HasDatabaseName("IX_match_queue_requests_queue_key");
     }
 }
