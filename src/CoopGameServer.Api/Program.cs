@@ -1,6 +1,8 @@
 using System.Text;
 using CoopGameServer.Api.Application.Authentication;
 using CoopGameServer.Api.Authentication;
+using CoopGameServer.Api.Application.GameRooms;
+using CoopGameServer.Api.Application.Matchmaking;
 using CoopGameServer.Api.Application.Parties;
 using CoopGameServer.Api.Application.Rewards;
 using CoopGameServer.Domain.Accounts;
@@ -64,6 +66,11 @@ builder.Services.AddScoped<RewardService>();
 // PartyService는 HTTP 요청과 PartyGrain 사이에서 서버 생성 partyId와
 // 생성 요청 멱등성 재생을 조정하므로 HTTP 요청 단위로 등록합니다.
 builder.Services.AddScoped<PartyService>();
+
+// MatchmakingService는 인증된 사용자를 파티·대기열 Grain 흐름으로 안전하게 연결하고,
+// GameRoomService는 매칭된 방의 최소 시작·완료 생명주기를 호출합니다.
+builder.Services.AddScoped<MatchmakingService>();
+builder.Services.AddScoped<GameRoomService>();
 
 // Orleans Client(클라이언트)는 Silo에 있는 Grain을 API 코드에서 호출하게 해 줍니다.
 // 현재는 개발 PC의 단일 Silo에만 연결합니다. 운영 환경의 다중 Silo·클러스터 설정은

@@ -226,6 +226,7 @@ public sealed class PartiesController(PartyService partyService) : ControllerBas
             snapshot.Lifecycle.ToString(),
             snapshot.LeaderPlayerId,
             snapshot.MemberPlayerIds.ToArray(),
+            snapshot.CurrentRoomId,
             isReplay);
     }
 }

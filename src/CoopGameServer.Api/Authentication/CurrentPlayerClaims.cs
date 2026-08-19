@@ -27,11 +27,20 @@ public static class CurrentPlayerClaims
             return false;
         }
 
+        return user.TryGetPlayerId(out var authenticatedPlayerId)
+            && authenticatedPlayerId == targetPlayerId;
+    }
+
+    /// <summary>검증된 JWT에서 현재 Player 식별자를 읽습니다.</summary>
+    /// <param name="user">ASP.NET Core가 인증한 현재 사용자입니다.</param>
+    /// <param name="playerId">성공하면 토큰의 Player 식별자입니다.</param>
+    /// <returns>Player 식별자를 올바른 Guid로 읽었으면 true입니다.</returns>
+    public static bool TryGetPlayerId(this ClaimsPrincipal user, out Guid playerId)
+    {
         // JwtBearer의 기본 Claim 매핑은 JWT의 sub를 NameIdentifier로 바꿉니다.
         // 테스트나 설정에 따라 매핑을 끈 환경도 안전하게 지원하도록 두 표현을 모두 읽습니다.
         var rawPlayerId = user.FindFirst(ClaimTypes.NameIdentifier)?.Value
             ?? user.FindFirst(JwtRegisteredClaimNames.Sub)?.Value;
-        return Guid.TryParse(rawPlayerId, out var authenticatedPlayerId)
-            && authenticatedPlayerId == targetPlayerId;
+        return Guid.TryParse(rawPlayerId, out playerId) && playerId != Guid.Empty;
     }
 }
