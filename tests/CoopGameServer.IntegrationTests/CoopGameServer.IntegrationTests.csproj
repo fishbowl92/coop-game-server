@@ -9,13 +9,13 @@
 
   <ItemGroup>
     <!-- 실제 PostgreSQL Docker 컨테이너를 테스트 중 생성하고 폐기하는 라이브러리입니다. -->
-    <PackageReference Include="Testcontainers.PostgreSql" Version="4.13.0" />
+    <PackageReference Include="Testcontainers.PostgreSql" Version="4.14.0" />
     <!-- Testcontainers의 간접 의존성에서 발견된 취약한 SSH.NET 버전을 수정 버전으로 고정합니다. -->
     <PackageReference Include="SSH.NET" Version="2026.0.0" />
     <PackageReference Include="coverlet.collector" Version="6.0.4" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
     <!-- 실제 외부 Silo 없이 테스트 프로세스 안에서 PartyGrain을 호출하기 위한 Orleans 테스트 호스트입니다. -->
-    <PackageReference Include="Microsoft.Orleans.TestingHost" Version="10.0.0" />
+    <PackageReference Include="Microsoft.Orleans.TestingHost" Version="10.2.2" />
     <PackageReference Include="xunit" Version="2.9.3" />
     <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
   </ItemGroup>
