@@ -175,6 +175,7 @@ internal sealed class MatchQueueState
         {
             MatchQueueTicketStatus.Matched => MatchQueueCommandError.TicketAlreadyMatched,
             MatchQueueTicketStatus.Cancelled => MatchQueueCommandError.TicketAlreadyCancelled,
+            MatchQueueTicketStatus.Completed => MatchQueueCommandError.TicketAlreadyCompleted,
             _ => MatchQueueCommandError.None,
         };
 
@@ -193,6 +194,59 @@ internal sealed class MatchQueueState
         _queuedTicketIds.Remove(ticket.TicketId);
 
         return Store(request, Success(CloneTicket(cancelledTicket), match: null));
+    }
+
+    /// <summary>
+    /// 완료된 roomId에 배정됐던 모든 티켓을 Completed로 바꿔 해당 참가자를 현재 매칭에서 해제합니다.
+    /// </summary>
+    internal MatchQueueCommandResult CompleteMatch(CompleteMatchQueueRequest request)
+    {
+        if (request.RequestId == Guid.Empty)
+        {
+            return Failure(ticketId: null, MatchQueueCommandError.InvalidRequestId);
+        }
+
+        if (_requests.TryGetValue(request.RequestId, out var storedRequest))
+        {
+            return storedRequest.Matches(request)
+                ? Replay(storedRequest.Result)
+                : Failure(ticketId: null, MatchQueueCommandError.RequestIdConflict);
+        }
+
+        if (request.RoomId == Guid.Empty)
+        {
+            return Store(request, Failure(ticketId: null, MatchQueueCommandError.InvalidRoomId));
+        }
+
+        var roomTickets = _ticketsById.Values
+            .Where(ticket => ticket.RoomId == request.RoomId)
+            .OrderBy(ticket => ticket.QueueOrder)
+            .ToArray();
+
+        if (roomTickets.Length == 0)
+        {
+            // GameRoomGrain 단독 테스트·복구처럼 Queue 티켓 없이 생성된 방이라면 해제할 점유도 없습니다.
+            // 이 성공 결과도 저장하여 같은 요청의 재시도가 동일한 no-op 결과를 재생하게 합니다.
+            return Store(request, SuccessWithoutTicket());
+        }
+
+        foreach (var ticket in roomTickets)
+        {
+            if (ticket.Status is not (MatchQueueTicketStatus.Matched or MatchQueueTicketStatus.Completed))
+            {
+                throw new InvalidOperationException(
+                    $"게임 방 {request.RoomId}의 티켓 {ticket.TicketId} 상태가 완료 처리 가능한 상태가 아닙니다: {ticket.Status}");
+            }
+
+            _ticketsById[ticket.TicketId] = ticket with
+            {
+                Status = MatchQueueTicketStatus.Completed,
+                MemberPlayerIds = ticket.MemberPlayerIds.ToArray(),
+            };
+        }
+
+        var firstCompletedTicket = CloneTicket(_ticketsById[roomTickets[0].TicketId]);
+        return Store(request, Success(firstCompletedTicket, match: null));
     }
 
     /// <summary>특정 티켓의 방어적 복사본을 반환합니다.</summary>
@@ -362,6 +416,14 @@ internal sealed class MatchQueueState
         return result;
     }
 
+    private MatchQueueCommandResult Store(
+        CompleteMatchQueueRequest request,
+        MatchQueueCommandResult result)
+    {
+        _requests[request.RequestId] = MatchQueueStoredRequest.ForCompleteMatch(request, CloneResult(result));
+        return result;
+    }
+
     private MatchQueueCommandResult Failure(Guid? ticketId, MatchQueueCommandError error)
     {
         return new MatchQueueCommandResult(
@@ -378,6 +440,15 @@ internal sealed class MatchQueueState
             Error: MatchQueueCommandError.None,
             Ticket: ticket,
             Match: CloneMatch(match));
+    }
+
+    private static MatchQueueCommandResult SuccessWithoutTicket()
+    {
+        return new MatchQueueCommandResult(
+            IsReplay: false,
+            Error: MatchQueueCommandError.None,
+            Ticket: null,
+            Match: null);
     }
 
     private static MatchQueueCommandResult Replay(MatchQueueCommandResult result)
@@ -417,6 +488,7 @@ internal enum MatchQueueCommandKind
 {
     Enqueue = 0,
     Cancel = 1,
+    CompleteMatch = 2,
 }
 
 /// <summary>
@@ -427,6 +499,7 @@ internal sealed record MatchQueueStoredRequest(
     MatchQueueCommandKind CommandKind,
     MatchQueueEntryRequest? EnqueueRequest,
     CancelMatchQueueRequest? CancelRequest,
+    CompleteMatchQueueRequest? CompleteMatchRequest,
     MatchQueueCommandResult Result,
     DateTimeOffset CreatedAt)
 {
@@ -439,6 +512,7 @@ internal sealed record MatchQueueStoredRequest(
             MatchQueueCommandKind.Enqueue,
             request with { MemberPlayerIds = request.MemberPlayerIds.ToArray() },
             CancelRequest: null,
+            CompleteMatchRequest: null,
             result,
             DateTimeOffset.UtcNow);
     }
@@ -451,6 +525,21 @@ internal sealed record MatchQueueStoredRequest(
             request.RequestId,
             MatchQueueCommandKind.Cancel,
             EnqueueRequest: null,
+            request,
+            CompleteMatchRequest: null,
+            result,
+            DateTimeOffset.UtcNow);
+    }
+
+    internal static MatchQueueStoredRequest ForCompleteMatch(
+        CompleteMatchQueueRequest request,
+        MatchQueueCommandResult result)
+    {
+        return new MatchQueueStoredRequest(
+            request.RequestId,
+            MatchQueueCommandKind.CompleteMatch,
+            EnqueueRequest: null,
+            CancelRequest: null,
             request,
             result,
             DateTimeOffset.UtcNow);
@@ -472,6 +561,13 @@ internal sealed record MatchQueueStoredRequest(
             && CancelRequest is { } storedRequest
             && storedRequest.TicketId == request.TicketId
             && storedRequest.RequesterPlayerId == request.RequesterPlayerId;
+    }
+
+    internal bool Matches(CompleteMatchQueueRequest request)
+    {
+        return CommandKind == MatchQueueCommandKind.CompleteMatch
+            && CompleteMatchRequest is { } storedRequest
+            && storedRequest.RoomId == request.RoomId;
     }
 
     internal MatchQueueStoredRequest Copy()

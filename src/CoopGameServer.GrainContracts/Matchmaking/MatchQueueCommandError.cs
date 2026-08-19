@@ -48,4 +48,10 @@ public enum MatchQueueCommandError
 
     /// <summary>같은 requestId가 이전 요청과 다른 내용에 재사용되었습니다.</summary>
     RequestIdConflict = 14,
+
+    /// <summary>완료 처리할 게임 방 식별자가 비어 있습니다.</summary>
+    InvalidRoomId = 15,
+
+    /// <summary>게임이 끝나 이미 완료 상태가 된 티켓은 대기 취소할 수 없습니다.</summary>
+    TicketAlreadyCompleted = 16,
 }

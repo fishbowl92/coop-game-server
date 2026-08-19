@@ -12,4 +12,7 @@ public enum MatchQueueTicketStatus
 
     /// <summary>리더가 매칭 전에 대기를 취소했습니다.</summary>
     Cancelled = 2,
+
+    /// <summary>배정된 게임 방이 종료되어 참가자가 다음 매칭을 신청할 수 있습니다.</summary>
+    Completed = 3,
 }

@@ -15,6 +15,11 @@ public interface IMatchQueueGrain : IGrainWithStringKey
     /// <summary>아직 매칭되지 않은 파티의 대기를 취소합니다.</summary>
     Task<MatchQueueCommandResult> CancelAsync(CancelMatchQueueRequest request);
 
+    /// <summary>
+    /// 게임이 끝난 roomId에 배정됐던 티켓을 완료 상태로 바꿔 참가자가 다시 매칭할 수 있게 합니다.
+    /// </summary>
+    Task<MatchQueueCommandResult> CompleteMatchAsync(CompleteMatchQueueRequest request);
+
     /// <summary>특정 대기 티켓의 현재 상태를 조회합니다.</summary>
     Task<MatchQueueTicket?> GetTicketAsync(Guid ticketId);
 

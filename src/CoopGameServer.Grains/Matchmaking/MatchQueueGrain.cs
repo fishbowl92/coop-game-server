@@ -92,6 +92,12 @@ public sealed class MatchQueueGrain(IDbContextFactory<GameDbContext> dbContextFa
     }
 
     /// <inheritdoc />
+    public Task<MatchQueueCommandResult> CompleteMatchAsync(CompleteMatchQueueRequest request)
+    {
+        return ExecuteCommandAsync(state => state.CompleteMatch(request));
+    }
+
+    /// <inheritdoc />
     public Task<MatchQueueTicket?> GetTicketAsync(Guid ticketId)
     {
         return Task.FromResult(_state.GetTicket(ticketId));
@@ -211,6 +217,10 @@ public sealed class MatchQueueGrain(IDbContextFactory<GameDbContext> dbContextFa
                 storedRequest.CancelRequest
                 ?? throw new InvalidOperationException("취소 요청 기록이 없습니다."),
                 JsonOptions),
+            MatchQueueCommandKind.CompleteMatch => JsonSerializer.Serialize(
+                storedRequest.CompleteMatchRequest
+                ?? throw new InvalidOperationException("매칭 완료 요청 기록이 없습니다."),
+                JsonOptions),
             _ => throw new InvalidOperationException("알 수 없는 대기열 명령 종류입니다."),
         };
 
@@ -242,6 +252,7 @@ public sealed class MatchQueueGrain(IDbContextFactory<GameDbContext> dbContextFa
                 JsonSerializer.Deserialize<MatchQueueEntryRequest>(record.RequestPayloadJson, JsonOptions)
                     ?? throw new InvalidOperationException("저장된 대기열 등록 요청을 복원할 수 없습니다."),
                 CancelRequest: null,
+                CompleteMatchRequest: null,
                 result,
                 record.CreatedAt),
             MatchQueueCommandKind.Cancel => new MatchQueueStoredRequest(
@@ -250,6 +261,16 @@ public sealed class MatchQueueGrain(IDbContextFactory<GameDbContext> dbContextFa
                 EnqueueRequest: null,
                 JsonSerializer.Deserialize<CancelMatchQueueRequest>(record.RequestPayloadJson, JsonOptions)
                     ?? throw new InvalidOperationException("저장된 대기열 취소 요청을 복원할 수 없습니다."),
+                CompleteMatchRequest: null,
+                result,
+                record.CreatedAt),
+            MatchQueueCommandKind.CompleteMatch => new MatchQueueStoredRequest(
+                record.RequestId,
+                commandKind,
+                EnqueueRequest: null,
+                CancelRequest: null,
+                JsonSerializer.Deserialize<CompleteMatchQueueRequest>(record.RequestPayloadJson, JsonOptions)
+                    ?? throw new InvalidOperationException("저장된 매칭 완료 요청을 복원할 수 없습니다."),
                 result,
                 record.CreatedAt),
             _ => throw new InvalidOperationException("알 수 없는 대기열 명령 종류입니다."),

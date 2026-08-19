@@ -393,7 +393,9 @@ public sealed class GameDbContext : DbContext
             table =>
             {
                 table.HasCheckConstraint("CK_match_queue_tickets_entry_kind", "entry_kind IN (0, 1)");
-                table.HasCheckConstraint("CK_match_queue_tickets_status", "status IN (0, 1, 2)");
+                // 0=Queued, 1=Matched, 2=Cancelled, 3=Completed입니다.
+                // Completed 티켓은 이력으로 남지만 참가자를 현재 매칭에서 점유하지 않습니다.
+                table.HasCheckConstraint("CK_match_queue_tickets_status", "status IN (0, 1, 2, 3)");
                 table.HasCheckConstraint("CK_match_queue_tickets_queue_order_positive", "queue_order > 0");
                 table.HasCheckConstraint(
                     "CK_match_queue_tickets_entry_shape",

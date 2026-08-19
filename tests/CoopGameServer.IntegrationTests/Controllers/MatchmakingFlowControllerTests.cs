@@ -5,6 +5,7 @@ using CoopGameServer.Api.Controllers;
 using CoopGameServer.Contracts.GameRooms;
 using CoopGameServer.Contracts.Matchmaking;
 using CoopGameServer.Domain.Accounts;
+using CoopGameServer.GrainContracts.Matchmaking;
 using CoopGameServer.GrainContracts.Parties;
 using CoopGameServer.IntegrationTests.Infrastructure;
 using Microsoft.AspNetCore.Http;
@@ -19,7 +20,7 @@ namespace CoopGameServer.IntegrationTests.Controllers;
 public sealed class MatchmakingFlowControllerTests(OrleansTestClusterFixture fixture)
 {
     [Fact]
-    public async Task ThreePlayerPartyAndSoloReachOneRoomThenPartyReturnsToLobby()
+    public async Task ThreePlayerPartyAndSoloReturnToLobbyThenCanMatchAgain()
     {
         var queueKey = CreateQueueKey();
         var partyId = Guid.NewGuid();
@@ -101,6 +102,33 @@ public sealed class MatchmakingFlowControllerTests(OrleansTestClusterFixture fix
             completeRequest,
             CancellationToken.None);
         Assert.True(GetGameRoomResponse(replayCompleteAction).IsReplay);
+
+        var queue = fixture.Cluster.GrainFactory.GetGrain<IMatchQueueGrain>(queueKey);
+        var completedPartyTicket = Assert.IsType<MatchQueueTicket>(
+            await queue.GetTicketAsync(partyResponse.Ticket.TicketId));
+        var completedSoloTicket = Assert.IsType<MatchQueueTicket>(
+            await queue.GetTicketAsync(soloResponse.Ticket.TicketId));
+
+        Assert.Equal(MatchQueueTicketStatus.Completed, completedPartyTicket.Status);
+        Assert.Equal(MatchQueueTicketStatus.Completed, completedSoloTicket.Status);
+
+        // 첫 게임의 Matched 티켓이 Completed로 해제됐으므로 같은 파티와 솔로가 두 번째 방에 들어갈 수 있어야 합니다.
+        var secondPartyAction = await partyController.EnqueueParty(
+            queueKey,
+            partyId,
+            new EnqueueMatchRequest(Guid.NewGuid()),
+            CancellationToken.None);
+        var secondPartyResponse = GetMatchmakingResponse(secondPartyAction);
+        var secondSoloAction = await soloController.EnqueueSolo(
+            queueKey,
+            new EnqueueMatchRequest(Guid.NewGuid()),
+            CancellationToken.None);
+        var secondSoloResponse = GetMatchmakingResponse(secondSoloAction);
+        var secondMatch = Assert.IsType<MatchAssignmentResponse>(secondSoloResponse.Match);
+
+        Assert.Null(secondPartyResponse.Match);
+        Assert.NotEqual(match.RoomId, secondMatch.RoomId);
+        Assert.Equal([.. partyPlayers, soloPlayerId], secondMatch.PlayerIds);
     }
 
     [Fact]

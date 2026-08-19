@@ -108,8 +108,22 @@ public sealed class GameRoomGrain(IDbContextFactory<GameDbContext> dbContextFact
         var candidateState = _state.Clone();
         var result = candidateState.Complete(requestId, DateTimeOffset.UtcNow);
 
-        if (requestId == Guid.Empty || result.IsReplay)
+        if (requestId == Guid.Empty)
         {
+            return result;
+        }
+
+        if (result.IsReplay)
+        {
+            // 최초 완료에서 방 DB 저장까지 성공하고 Queue 해제 응답만 유실됐을 수 있습니다.
+            // 같은 requestId 재시도에서도 Queue의 완료 상태를 다시 확인해 최종 상태로 수렴시킵니다.
+            if (result.Error is GameRoomCommandError.None)
+            {
+                await EnsureMatchTicketsCompletedAsync(
+                    currentRoom ?? throw new InvalidOperationException("완료된 게임 방 상태가 없습니다."),
+                    requestId);
+            }
+
             return result;
         }
 
@@ -125,7 +139,36 @@ public sealed class GameRoomGrain(IDbContextFactory<GameDbContext> dbContextFact
         }
 
         await PersistCandidateStateAsync(candidateState);
+
+        if (result.Error is GameRoomCommandError.None)
+        {
+            // 방 완료가 PostgreSQL에 확정된 뒤에만 참가자를 현재 매칭에서 해제합니다.
+            // 반대 순서라면 방은 아직 InGame인데 같은 플레이어가 새 방에 들어갈 수 있습니다.
+            await EnsureMatchTicketsCompletedAsync(
+                candidateState.Get() ?? throw new InvalidOperationException("완료된 게임 방 상태가 없습니다."),
+                requestId);
+        }
+
         return result;
+    }
+
+    /// <summary>
+    /// 완료된 방의 Queue Grain에 결정적인 하위 요청을 보내 모든 Matched 티켓을 Completed로 전환합니다.
+    /// </summary>
+    private async Task EnsureMatchTicketsCompletedAsync(GameRoomSnapshot room, Guid roomRequestId)
+    {
+        var queue = GrainFactory.GetGrain<IMatchQueueGrain>(room.QueueKey);
+        var queueRequestId = CreateRelatedRequestId(roomRequestId, room.RoomId, operationMarker: 3);
+        var queueResult = await queue.CompleteMatchAsync(
+            new CompleteMatchQueueRequest(queueRequestId, room.RoomId));
+
+        if (queueResult.Error is not MatchQueueCommandError.None)
+        {
+            // 방 완료는 이미 영속화됐을 수 있으므로 오류를 감추지 않습니다.
+            // 호출자가 같은 GameRoom requestId로 재시도하면 이 하위 요청도 같은 ID로 다시 실행됩니다.
+            throw new InvalidOperationException(
+                $"게임 방 {room.RoomId}의 매칭 티켓 완료 처리에 실패했습니다: {queueResult.Error}");
+        }
     }
 
     /// <summary>모든 사전 구성 파티가 이 방에 들어갈 수 있는지 확인한 뒤 InGame으로 전환합니다.</summary>
@@ -239,9 +282,18 @@ public sealed class GameRoomGrain(IDbContextFactory<GameDbContext> dbContextFact
         Guid partyId,
         byte operationMarker)
     {
+        return CreateRelatedRequestId(roomRequestId, partyId, operationMarker);
+    }
+
+    /// <summary>상위 방 요청·대상 식별자·작업 종류로 항상 같은 하위 requestId를 만듭니다.</summary>
+    private static Guid CreateRelatedRequestId(
+        Guid roomRequestId,
+        Guid targetId,
+        byte operationMarker)
+    {
         Span<byte> source = stackalloc byte[33];
         roomRequestId.TryWriteBytes(source[..16]);
-        partyId.TryWriteBytes(source.Slice(16, 16));
+        targetId.TryWriteBytes(source.Slice(16, 16));
         source[32] = operationMarker;
 
         var hash = SHA256.HashData(source);
