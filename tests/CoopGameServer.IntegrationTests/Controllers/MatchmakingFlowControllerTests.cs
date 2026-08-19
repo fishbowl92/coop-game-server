@@ -200,6 +200,10 @@ public sealed class MatchmakingFlowControllerTests(OrleansTestClusterFixture fix
             "   ",
             new EnqueueMatchRequest(Guid.NewGuid()),
             CancellationToken.None);
+        var unsupportedQueueAction = await controller.EnqueueSolo(
+            "coop-dungeon-hard-v1",
+            new EnqueueMatchRequest(Guid.NewGuid()),
+            CancellationToken.None);
         var invalidRequestAction = await controller.EnqueueSolo(
             CreateQueueKey(),
             new EnqueueMatchRequest(Guid.Empty),
@@ -211,6 +215,7 @@ public sealed class MatchmakingFlowControllerTests(OrleansTestClusterFixture fix
             CancellationToken.None);
 
         AssertStatusCode(invalidQueueAction, StatusCodes.Status400BadRequest);
+        AssertStatusCode(unsupportedQueueAction, StatusCodes.Status400BadRequest);
         AssertStatusCode(invalidRequestAction, StatusCodes.Status400BadRequest);
         AssertStatusCode(missingTicketAction, StatusCodes.Status404NotFound);
     }
@@ -298,5 +303,5 @@ public sealed class MatchmakingFlowControllerTests(OrleansTestClusterFixture fix
         Assert.Equal(expectedStatusCode, problemDetails.Status);
     }
 
-    private static string CreateQueueKey() => $"queue-{Guid.NewGuid():N}";
+    private static string CreateQueueKey() => MatchmakingQueueKeys.CoopDungeonNormalV1;
 }

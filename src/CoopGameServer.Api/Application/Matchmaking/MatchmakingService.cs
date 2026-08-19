@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using CoopGameServer.Contracts.Matchmaking;
 using CoopGameServer.GrainContracts.Matchmaking;
 using CoopGameServer.GrainContracts.Parties;
 using CoopGameServer.Persistence;
@@ -16,9 +17,6 @@ namespace CoopGameServer.Api.Application.Matchmaking;
 /// </remarks>
 public sealed class MatchmakingService(IGrainFactory grainFactory, GameDbContext gameDbContext)
 {
-    /// <summary>PostgreSQL queue_key 열과 같은 최대 길이입니다.</summary>
-    public const int MaxQueueKeyLength = 100;
-
     /// <summary>인증된 플레이어 한 명을 파티 없는 솔로 티켓으로 등록합니다.</summary>
     public async Task<MatchmakingApplicationResult> EnqueueSoloAsync(
         string queueKey,
@@ -217,12 +215,15 @@ public sealed class MatchmakingService(IGrainFactory grainFactory, GameDbContext
         return GetQueue(queueKey).GetTicketAsync(ticketId).WaitAsync(cancellationToken);
     }
 
-    /// <summary>라우트 문자열이 DB 열 범위 안의 명시적인 대기열 키인지 확인합니다.</summary>
+    /// <summary>
+    /// 라우트 문자열이 클라이언트가 임의 생성한 Grain 키가 아니라 현재 서버가 지원하는 Queue인지 확인합니다.
+    /// </summary>
     private static bool IsValidQueueKey(string queueKey)
     {
-        return !string.IsNullOrWhiteSpace(queueKey)
-            && queueKey.Length <= MaxQueueKeyLength
-            && string.Equals(queueKey, queueKey.Trim(), StringComparison.Ordinal);
+        return string.Equals(
+            queueKey,
+            MatchmakingQueueKeys.CoopDungeonNormalV1,
+            StringComparison.Ordinal);
     }
 
     /// <summary>문자열 기본 키로 Orleans가 관리하는 대기열 Grain 참조를 얻습니다.</summary>
