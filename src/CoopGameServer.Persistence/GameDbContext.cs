@@ -464,7 +464,9 @@ public sealed class GameDbContext : DbContext
         var request = modelBuilder.Entity<MatchQueueRequestRecord>();
 
         request.ToTable("match_queue_requests");
-        request.HasKey(entity => entity.RequestId);
+        // 같은 requestId는 동일 Queue 안에서만 멱등성 키입니다.
+        // 다른 게임 모드 Queue는 독립된 HTTP 경로·상태 경계이므로 같은 값을 사용할 수 있습니다.
+        request.HasKey(entity => new { entity.QueueKey, entity.RequestId });
         request.Property(entity => entity.RequestId)
             .HasColumnName("request_id")
             .ValueGeneratedNever();
@@ -488,8 +490,6 @@ public sealed class GameDbContext : DbContext
             .HasColumnName("created_at")
             .HasColumnType("timestamp with time zone")
             .IsRequired();
-        request.HasIndex(entity => entity.QueueKey)
-            .HasDatabaseName("IX_match_queue_requests_queue_key");
     }
 
     /// <summary>
@@ -552,7 +552,9 @@ public sealed class GameDbContext : DbContext
                 "CK_game_room_requests_payload_shape",
                 "(command_kind = 'Create' AND request_payload_json IS NOT NULL) OR "
                 + "(command_kind IN ('Start', 'Complete') AND request_payload_json IS NULL)"));
-        request.HasKey(entity => entity.RequestId);
+        // GameRoom 명령의 멱등성 범위는 roomId입니다.
+        // 따라서 같은 requestId라도 대상 방이 다르면 별개의 명령으로 저장합니다.
+        request.HasKey(entity => new { entity.RoomId, entity.RequestId });
         request.Property(entity => entity.RequestId)
             .HasColumnName("request_id")
             .ValueGeneratedNever();
@@ -574,9 +576,6 @@ public sealed class GameDbContext : DbContext
             .HasColumnName("created_at")
             .HasColumnType("timestamp with time zone")
             .IsRequired();
-        request.HasIndex(entity => entity.RoomId)
-            .HasDatabaseName("IX_game_room_requests_room_id");
-
         // 생성 실패 결과도 보존해야 하므로 game_room_requests는 game_rooms와 외래 키로 묶지 않습니다.
     }
 }

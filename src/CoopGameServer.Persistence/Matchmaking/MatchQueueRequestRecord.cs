@@ -28,7 +28,7 @@ public sealed class MatchQueueRequestRecord
         CreatedAt = createdAt;
     }
 
-    /// <summary>같은 명령의 재시도를 식별하는 전역 멱등성 키입니다.</summary>
+    /// <summary>같은 Queue 안에서 명령 재시도를 식별하는 멱등성 키입니다.</summary>
     public Guid RequestId { get; private set; }
 
     /// <summary>이 요청을 처리한 MatchQueueGrain의 문자열 키입니다.</summary>

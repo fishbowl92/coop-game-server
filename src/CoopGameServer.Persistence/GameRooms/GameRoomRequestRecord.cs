@@ -26,6 +26,7 @@ public sealed class GameRoomRequestRecord
     }
 
     /// <summary>클라이언트 재전송을 식별하는 전역 고유 요청 번호입니다.</summary>
+    /// <summary>같은 GameRoom 안에서 명령 재시도를 식별하는 멱등성 키입니다.</summary>
     public Guid RequestId { get; private set; }
 
     /// <summary>요청을 처리한 GameRoomGrain의 방 식별자입니다.</summary>

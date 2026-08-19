@@ -151,6 +151,23 @@ public sealed class GameRoomGrainTests(OrleansTestClusterFixture fixture)
             await gameDbContext.GameRoomRequests.CountAsync(record => record.RoomId == assignment.RoomId));
     }
 
+    [Fact]
+    public async Task SameRequestIdCanCreateDifferentGameRooms()
+    {
+        var firstAssignment = CreateAssignment();
+        var secondAssignment = CreateAssignment();
+        var sharedRequestId = Guid.NewGuid();
+
+        var firstResult = await GetRoom(firstAssignment.RoomId)
+            .CreateAsync(sharedRequestId, firstAssignment);
+        var secondResult = await GetRoom(secondAssignment.RoomId)
+            .CreateAsync(sharedRequestId, secondAssignment);
+
+        Assert.Equal(GameRoomCommandError.None, firstResult.Error);
+        Assert.Equal(GameRoomCommandError.None, secondResult.Error);
+        Assert.NotEqual(firstResult.Room?.RoomId, secondResult.Room?.RoomId);
+    }
+
     /// <summary>주어진 Guid 키의 GameRoomGrain 참조를 테스트 Client에서 얻습니다.</summary>
     private IGameRoomGrain GetRoom(Guid roomId)
     {

@@ -253,12 +253,15 @@ public sealed class MatchQueueGrainTests(OrleansTestClusterFixture fixture)
     {
         var firstQueue = GetQueue();
         var secondQueue = GetQueue();
-        var firstEntry = CreatePreformedEntry(memberCount: 2);
-        var secondEntry = CreateSoloEntry();
+        var sharedRequestId = Guid.NewGuid();
+        var firstEntry = CreatePreformedEntry(memberCount: 2) with { RequestId = sharedRequestId };
+        var secondEntry = CreateSoloEntry() with { RequestId = sharedRequestId };
 
-        await firstQueue.EnqueueAsync(firstEntry);
-        await secondQueue.EnqueueAsync(secondEntry);
+        var firstResult = await firstQueue.EnqueueAsync(firstEntry);
+        var secondResult = await secondQueue.EnqueueAsync(secondEntry);
 
+        Assert.Equal(MatchQueueCommandError.None, firstResult.Error);
+        Assert.Equal(MatchQueueCommandError.None, secondResult.Error);
         Assert.Equal(firstEntry.PartyId, Assert.Single((await firstQueue.GetSnapshotAsync()).QueuedTickets).PartyId);
         Assert.Null(Assert.Single((await secondQueue.GetSnapshotAsync()).QueuedTickets).PartyId);
     }
