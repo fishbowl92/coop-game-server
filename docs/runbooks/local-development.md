@@ -119,7 +119,7 @@ Silo(사일로)는 Grain을 활성화하고 실행하는 Orleans 서버 프로�
 dotnet run --project .\src\CoopGameServer.Api\CoopGameServer.Api.csproj
 ```
 
-API는 Player·Reward HTTP 요청을 처리하고 Orleans Client로 Silo를 호출합니다. API와 Silo는 별도 프로세스이므로 동시에 실행되어야 Ping 경로가 성공합니다.
+API는 Player·Reward 요청을 PostgreSQL로 처리하고, Party·Matchmaking·GameRoom 요청은 Orleans Client를 통해 Silo의 Grain으로 전달합니다. API와 Silo는 별도 프로세스이므로 동시에 실행되어야 Party·매칭·게임 방·Ping 경로가 성공합니다.
 
 ## 8. 로그인과 본인 API 확인 — PowerShell 창 C
 

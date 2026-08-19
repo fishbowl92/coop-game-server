@@ -2,13 +2,13 @@
 
 > Microsoft Orleans 기반 협동 게임 서비스 백엔드를 단계적으로 구현하는 C#·.NET 10 프로젝트입니다.
 
-현재는 Player 프로필, PostgreSQL 영속성, 재화·인벤토리 보상, 멱등성·트랜잭션, PostgreSQL 통합 테스트와 API → Orleans Client → Silo → Ping Grain 연결을 구현했습니다. PartyGrain의 생성·가입·탈퇴·해산·리더 승계 규칙과 PostgreSQL 영속성, JWT(JSON Web Token, 서명된 로그인 토큰) 회원 가입·로그인·본인 인가도 구현했습니다. Redis 애플리케이션 연동·운영 배포는 아직 구현하지 않았습니다.
+현재는 Player 프로필·인증, 재화·인벤토리 보상, PartyGrain, MatchQueueGrain, GameRoomGrain과 PostgreSQL 영속성을 구현했습니다. 사전 구성 파티와 솔로를 정확히 4명으로 매칭하고, 게임 방 완료 뒤 파티를 유지한 채 로비로 복귀시키며, 완료된 티켓을 해제해 같은 참가자가 다음 게임에 다시 매칭될 수 있습니다. Redis 애플리케이션 연동·실제 전투·재접속·운영 배포는 아직 구현하지 않았습니다.
 
 ## 현재 구현 범위
 
 - 회원 가입·로그인과 비밀번호 해시 저장, JWT 접근 토큰 발급
 - Player 본인 조회·닉네임 변경과 관리자 전용 Player 생성 HTTP API
-- PostgreSQL의 `players`, `accounts`, `player_wallets`, `inventories`, `reward_audits`, 파티 테이블
+- PostgreSQL의 Player·계정·보상·파티·매칭 티켓·게임 방·멱등성 요청 테이블
 - EF Core(Entity Framework Core, C# 객체와 관계형 데이터베이스를 연결하는 ORM) Migration
 - `requestId` 기반 보상 멱등성(Idempotency, 같은 요청을 재전송해도 한 번만 반영되는 성질)
 - 보상 이력·지갑·인벤토리를 함께 처리하는 Transaction(트랜잭션, 모두 성공하거나 모두 실패하는 작업 단위)
@@ -16,6 +16,10 @@
 - xUnit 단위 테스트와 Testcontainers 기반 실제 PostgreSQL 통합 테스트
 - 별도 Orleans Silo와 진단용 Ping Grain 호출
 - PartyGrain의 생성·조회·가입·탈퇴·해산·리더 승계·멱등성·PostgreSQL 영속성
+- MatchQueueGrain의 솔로·사전 구성 파티 등록, 취소, 정확히 4명 조합과 재시작 복원
+- GameRoomGrain의 Ready → InGame → Completed 생명주기와 게임 종료 후 파티 복귀
+- 게임 완료 후 Matched 티켓을 Completed로 해제하고 같은 참가자의 다음 매칭 허용
+- 외부 API에서 `coop-dungeon-normal-v1` 단일 Queue만 허용하는 서버 정의 정책
 - 일반 Player의 본인 데이터·파티 조작 인가와 관리자 전용 보상·진단 API 제한
 - Orleans TestCluster와 실제 PostgreSQL을 사용하는 자동 테스트
 - GitHub Actions CI(Continuous Integration, 지속적 통합) 빌드·테스트
@@ -28,9 +32,10 @@ Redis(REmote DIctionary Server, 원격 딕셔너리 서버)는 현재 로컬 컨
 HTTP Client
     ├─ Auth API ──> PasswordHasher ──> PostgreSQL(accounts) ──> JWT 발급
     ├─ Player·Reward API ──> JWT 인가 ──> EF Core ──> PostgreSQL
-    └─ Party·Ping API ──> JWT 인가 ──> Orleans Client ──> Silo ──> Grain
+    ├─ Party·Ping API ──> JWT 인가 ──> Orleans Client ──> Silo ──> Grain
+    └─ Matchmaking·GameRoom API ──> JWT 인가 ──> Party·Queue·Room Grain ──> PostgreSQL
 
-IntegrationTests ──> Orleans TestCluster ──> PartyGrain
+IntegrationTests ──> Orleans TestCluster ──> Party·MatchQueue·GameRoom Grain ──> PostgreSQL
 
 Redis: 컨테이너만 준비됨, 애플리케이션 연결은 아직 없음
 ```
@@ -176,6 +181,11 @@ API와 Silo는 서로 다른 프로세스이므로 두 PowerShell 창을 모두 
 - `POST /api/auth/login`: 로그인 식별자·비밀번호를 검증하고 JWT를 발급
 - `GET /api/players/{playerId}`, `PATCH /api/players/{playerId}/nickname`: JWT 속 본인만 허용
 - `POST /api/parties`, `GET /api/parties/{partyId}`, 가입·탈퇴·해산 경로: JWT 속 본인만 조작·조회
+- `POST /api/matchmaking/queues/coop-dungeon-normal-v1/solo`: 인증된 본인을 솔로 티켓으로 등록
+- `POST /api/matchmaking/queues/coop-dungeon-normal-v1/parties/{partyId}`: 파티 리더가 실제 멤버 전체를 등록
+- `POST /api/matchmaking/queues/coop-dungeon-normal-v1/tickets/{ticketId}/cancel`: 매칭 전 대기 취소
+- `GET /api/game-rooms/{roomId}`: 방 참가자 또는 관리자가 현재 방 상태 조회
+- `POST /api/game-rooms/{roomId}/start`, `POST /api/game-rooms/{roomId}/complete`: 현재 단계의 관리자 전용 생명주기 제어
 - `POST /api/players/{playerId}/rewards`, `GET /api/diagnostics/orleans/ping/{grainId}`: 관리자 역할만 허용
 
 일반 계정의 회원 가입 예시는 다음과 같습니다.
@@ -222,7 +232,9 @@ docker compose down
 
 ## 현재 한계와 다음 목표
 
-- PingGrain은 연결 진단용이며 아직 게임 상태를 저장하지 않습니다.
+- PingGrain은 연결 진단용이고, 실제 게임 상태는 PartyGrain·MatchQueueGrain·GameRoomGrain이 관리합니다.
 - JWT 접근 토큰은 구현했지만 갱신 토큰, 로그아웃·폐기 목록, 관리자 계정 초기화 절차는 아직 없습니다.
 - Redis는 컨테이너만 있으며 애플리케이션 코드에서 사용하지 않습니다.
-- 다음 기능은 대기열·매칭 Grain과 운영용 인증·관측성 보강입니다.
+- 현재 공개 Queue는 `coop-dungeon-normal-v1` 하나입니다. 여러 Queue를 추가하기 전에는 Player 전역 매칭 예약이 필요합니다.
+- GameRoom은 최소 생명주기만 있으며 공격·스킬·웨이브·재접속·결과 보상은 아직 없습니다.
+- 다음 기능은 PlayerGrain과 기존 RewardService의 책임 경계를 확정한 뒤 GameRoom 전투·재접속·보상 확정을 구현하는 것입니다.

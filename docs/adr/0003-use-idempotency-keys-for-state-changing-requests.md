@@ -3,16 +3,19 @@
 - 상태: 승인됨(Accepted)
 - 결정일: 2026-07-22
 
-## 현재 구현 상태 — 2026-08-13
+## 현재 구현 상태 — 2026-08-20
 
 - 보상 API는 HTTP Header가 아니라 JSON Body(요청 본문)의 `requestId`를 받습니다.
 - 현재 키 범위는 PostgreSQL의 `reward_audits.request_id` 전역 `UNIQUE` 제약입니다. 따라서 모든 플레이어와 API를 통틀어 같은 UUID를 재사용하지 않습니다.
 - 같은 `requestId`와 같은 보상 내용이 재전송되면 기존 결과를 반환하고, 같은 키로 다른 내용을 보내면 `409 Conflict`로 거부합니다.
 - 보상 감사 로그·지갑·인벤토리 변경은 하나의 PostgreSQL Transaction으로 처리합니다.
 - 같은 Player의 서로 다른 `requestId`가 동시에 실행될 때는 `players` 행을 `SELECT FOR UPDATE`로 잠가 골드·아이템 유실 갱신과 첫 행 생성 경합을 방지합니다.
+- Party 명령은 `party_requests.request_id`를 전역 기본 키로 사용하고, 다른 Party에서 같은 ID를 재사용하면 명시적인 충돌로 처리합니다.
+- MatchQueue 명령은 `(queue_key, request_id)`, GameRoom 명령은 `(room_id, request_id)` 복합 기본 키를 사용합니다. 같은 대상 안에서는 재생·충돌을 판정하고, 다른 대상의 같은 UUID는 독립 명령으로 처리합니다.
+- 게임 완료 요청은 결정적인 하위 `requestId`를 만들어 MatchQueue 티켓 완료 명령을 재시도하며, 응답이 유실돼도 같은 티켓 해제 결과로 수렴합니다.
 - Redis 선조회와 TTL 결과 캐시는 아직 구현하지 않았으며 5주차 목표입니다.
 
-현재 구현의 전역 UUID 범위와 아래 최종 목표인 `사용자 ID + API 경로 + 멱등성 키` 범위는 다릅니다. API 종류가 늘어나기 전에 전역 UUID를 유지할지 복합 범위로 마이그레이션할지 후속 ADR로 결정합니다.
+현재는 명령의 위험과 소유 상태에 따라 범위를 명시합니다. 보상·Party는 전역 UUID를 유지하고, MatchQueue·GameRoom은 소유 Grain 키와 `requestId`를 함께 사용합니다. 새 상태 변경 API도 구현 전에 멱등성 범위를 먼저 정합니다.
 
 ## 맥락
 
@@ -100,7 +103,7 @@ Redis는 보조 방어선으로만 사용합니다.
 
 ## 구현 세부 원칙
 
-- 최종 목표 키 범위는 `사용자 ID + API 경로 + 멱등성 키`입니다. 현재 보상 API는 전역 `requestId UNIQUE`를 사용합니다.
+- 기본 키 범위는 `요청 대상 + API 경로 + 멱등성 키`입니다. 현재 보상·Party는 전역 UUID를, MatchQueue·GameRoom은 각각 QueueKey·RoomId와 묶은 복합 키를 사용합니다.
 - 같은 키로 다른 요청 본문(Body, 요청 데이터)을 보내면 오류로 처리합니다. 같은 번호표로 다른 작업을 수행하게 해서는 안 됩니다.
 - 처리 중인 키가 다시 들어오면 완료될 때까지 기다리게 하거나 `409 Conflict(충돌)` 또는 재시도 가능 응답을 반환하는 정책을 별도로 정합니다.
 - Redis TTL은 API 특성에 맞게 정합니다. Redis 연동 시 24시간을 초기 비교값으로 검토하되 측정과 요구사항에 따라 확정합니다.
