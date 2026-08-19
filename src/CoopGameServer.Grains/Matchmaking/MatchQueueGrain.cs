@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using CoopGameServer.GrainContracts.GameRooms;
 using CoopGameServer.GrainContracts.Matchmaking;
 using CoopGameServer.Persistence;
 using CoopGameServer.Persistence.Matchmaking;
@@ -70,9 +71,18 @@ public sealed class MatchQueueGrain(IDbContextFactory<GameDbContext> dbContextFa
     }
 
     /// <inheritdoc />
-    public Task<MatchQueueCommandResult> EnqueueAsync(MatchQueueEntryRequest request)
+    public async Task<MatchQueueCommandResult> EnqueueAsync(MatchQueueEntryRequest request)
     {
-        return ExecuteCommandAsync(state => state.Enqueue(this.GetPrimaryKeyString(), request));
+        var result = await ExecuteCommandAsync(state => state.Enqueue(this.GetPrimaryKeyString(), request));
+
+        if (result.Match is { } match)
+        {
+            // 대기열 DB 커밋 뒤 방을 생성합니다. 이 사이에 Silo가 중단되더라도 같은 Enqueue 요청을
+            // 재전송하면 저장된 MatchAssignment가 재생되고 같은 roomId 방 생성을 다시 시도합니다.
+            await EnsureReadyGameRoomAsync(match);
+        }
+
+        return result;
     }
 
     /// <inheritdoc />
@@ -91,6 +101,23 @@ public sealed class MatchQueueGrain(IDbContextFactory<GameDbContext> dbContextFa
     public Task<MatchQueueSnapshot> GetSnapshotAsync()
     {
         return Task.FromResult(_state.GetSnapshot(this.GetPrimaryKeyString()));
+    }
+
+    /// <summary>
+    /// 매칭 결과의 roomId를 Grain 키와 생성 requestId로 함께 사용해 Ready 게임 방을 멱등하게 보장합니다.
+    /// </summary>
+    private async Task EnsureReadyGameRoomAsync(MatchAssignment match)
+    {
+        var gameRoom = GrainFactory.GetGrain<IGameRoomGrain>(match.RoomId);
+        var createResult = await gameRoom.CreateAsync(match.RoomId, match);
+
+        if (createResult.Error is not GameRoomCommandError.None)
+        {
+            // 매칭은 이미 PostgreSQL에 저장됐으므로 예외를 숨기지 않고 호출자에게 재시도를 유도합니다.
+            // 같은 Enqueue requestId 재전송은 최초 MatchAssignment를 재생해 방 생성을 다시 수행합니다.
+            throw new InvalidOperationException(
+                $"매칭 방 {match.RoomId} 생성에 실패했습니다: {createResult.Error}");
+        }
     }
 
     /// <summary>

@@ -46,4 +46,24 @@ public interface IPartyGrain : IGrainWithGuidKey
     /// <param name="leaderPlayerId">리더 권한을 확인할 플레이어 식별자입니다.</param>
     /// <returns>명령 적용 여부와 해산된 파티 상태입니다.</returns>
     Task<PartyCommandResult> DisbandAsync(Guid requestId, Guid leaderPlayerId);
+
+    /// <summary>현재 리더의 요청으로 파티를 매칭 대기 상태로 전환하고 멤버 구성을 잠급니다.</summary>
+    /// <param name="requestId">같은 변경 요청의 재전송을 식별하는 고유 번호입니다.</param>
+    /// <param name="leaderPlayerId">리더 권한을 확인할 플레이어 식별자입니다.</param>
+    Task<PartyCommandResult> QueueForMatchAsync(Guid requestId, Guid leaderPlayerId);
+
+    /// <summary>현재 리더의 요청으로 매칭 대기를 취소하고 로비 활성 상태로 돌아갑니다.</summary>
+    /// <param name="requestId">같은 변경 요청의 재전송을 식별하는 고유 번호입니다.</param>
+    /// <param name="leaderPlayerId">리더 권한을 확인할 플레이어 식별자입니다.</param>
+    Task<PartyCommandResult> CancelMatchQueueAsync(Guid requestId, Guid leaderPlayerId);
+
+    /// <summary>매칭된 방 식별자를 기록하고 파티를 게임 진행 상태로 전환합니다.</summary>
+    /// <param name="requestId">같은 변경 요청의 재전송을 식별하는 고유 번호입니다.</param>
+    /// <param name="roomId">매칭 대기열이 생성한 게임 방 식별자입니다.</param>
+    Task<PartyCommandResult> StartGameAsync(Guid requestId, Guid roomId);
+
+    /// <summary>현재 게임 방을 완료하고 사전 구성 파티를 로비 활성 상태로 되돌립니다.</summary>
+    /// <param name="requestId">같은 변경 요청의 재전송을 식별하는 고유 번호입니다.</param>
+    /// <param name="roomId">현재 참가 중인 게임 방 식별자입니다.</param>
+    Task<PartyCommandResult> CompleteGameAsync(Guid requestId, Guid roomId);
 }

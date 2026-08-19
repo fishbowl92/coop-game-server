@@ -3,6 +3,7 @@ using System;
 using CoopGameServer.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -11,9 +12,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace CoopGameServer.Persistence.Migrations
 {
     [DbContext(typeof(GameDbContext))]
-    partial class GameDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260819110431_AddPartyMatchLifecycle")]
+    partial class AddPartyMatchLifecycle
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -194,101 +197,6 @@ namespace CoopGameServer.Persistence.Migrations
                     b.ToTable("player_wallets", null, t =>
                         {
                             t.HasCheckConstraint("CK_player_wallets_gold_nonnegative", "gold >= 0");
-                        });
-                });
-
-            modelBuilder.Entity("CoopGameServer.Persistence.GameRooms.GameRoomRecord", b =>
-                {
-                    b.Property<Guid>("RoomId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("room_id");
-
-                    b.Property<DateTimeOffset?>("CompletedAt")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("completed_at");
-
-                    b.Property<DateTimeOffset>("CreatedAt")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("created_at");
-
-                    b.Property<int>("Lifecycle")
-                        .HasColumnType("integer")
-                        .HasColumnName("lifecycle");
-
-                    b.PrimitiveCollection<Guid[]>("PartyIds")
-                        .IsRequired()
-                        .HasColumnType("uuid[]")
-                        .HasColumnName("party_ids");
-
-                    b.PrimitiveCollection<Guid[]>("PlayerIds")
-                        .IsRequired()
-                        .HasColumnType("uuid[]")
-                        .HasColumnName("player_ids");
-
-                    b.Property<string>("QueueKey")
-                        .IsRequired()
-                        .HasMaxLength(100)
-                        .HasColumnType("character varying(100)")
-                        .HasColumnName("queue_key");
-
-                    b.Property<DateTimeOffset?>("StartedAt")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("started_at");
-
-                    b.HasKey("RoomId");
-
-                    b.HasIndex("QueueKey", "Lifecycle", "CreatedAt")
-                        .HasDatabaseName("IX_game_rooms_queue_key_lifecycle_created_at");
-
-                    b.ToTable("game_rooms", null, t =>
-                        {
-                            t.HasCheckConstraint("CK_game_rooms_four_players", "cardinality(player_ids) = 4");
-
-                            t.HasCheckConstraint("CK_game_rooms_lifecycle", "lifecycle IN (0, 1, 2)");
-
-                            t.HasCheckConstraint("CK_game_rooms_lifecycle_times", "(lifecycle = 0 AND started_at IS NULL AND completed_at IS NULL) OR (lifecycle = 1 AND started_at IS NOT NULL AND completed_at IS NULL) OR (lifecycle = 2 AND started_at IS NOT NULL AND completed_at IS NOT NULL)");
-
-                            t.HasCheckConstraint("CK_game_rooms_party_count", "cardinality(party_ids) <= 4");
-                        });
-                });
-
-            modelBuilder.Entity("CoopGameServer.Persistence.GameRooms.GameRoomRequestRecord", b =>
-                {
-                    b.Property<Guid>("RequestId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("request_id");
-
-                    b.Property<string>("CommandKind")
-                        .IsRequired()
-                        .HasMaxLength(20)
-                        .HasColumnType("character varying(20)")
-                        .HasColumnName("command_kind");
-
-                    b.Property<DateTimeOffset>("CreatedAt")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("created_at");
-
-                    b.Property<string>("RequestPayloadJson")
-                        .HasColumnType("jsonb")
-                        .HasColumnName("request_payload_json");
-
-                    b.Property<string>("ResultPayloadJson")
-                        .IsRequired()
-                        .HasColumnType("jsonb")
-                        .HasColumnName("result_payload_json");
-
-                    b.Property<Guid>("RoomId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("room_id");
-
-                    b.HasKey("RequestId");
-
-                    b.HasIndex("RoomId")
-                        .HasDatabaseName("IX_game_room_requests_room_id");
-
-                    b.ToTable("game_room_requests", null, t =>
-                        {
-                            t.HasCheckConstraint("CK_game_room_requests_payload_shape", "(command_kind = 'Create' AND request_payload_json IS NOT NULL) OR (command_kind IN ('Start', 'Complete') AND request_payload_json IS NULL)");
                         });
                 });
 

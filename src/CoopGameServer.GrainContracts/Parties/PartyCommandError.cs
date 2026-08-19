@@ -53,4 +53,25 @@ public enum PartyCommandError
 
     /// <summary>이미 사용한 requestId를 다른 명령 내용에 재사용했습니다.</summary>
     RequestIdConflict = 14,
+
+    /// <summary>매칭 대기 중이어서 파티 멤버 구성을 변경할 수 없습니다.</summary>
+    PartyMatchQueued = 15,
+
+    /// <summary>게임 진행 중이어서 파티 멤버 구성을 변경할 수 없습니다.</summary>
+    PartyInGame = 16,
+
+    /// <summary>현재 리더가 아닌 플레이어가 매칭 대기 시작 또는 취소를 요청했습니다.</summary>
+    OnlyLeaderCanManageMatchmaking = 17,
+
+    /// <summary>매칭 대기 상태가 아닌 파티에 게임 시작을 요청했습니다.</summary>
+    PartyNotMatchQueued = 18,
+
+    /// <summary>게임 중이 아닌 파티에 게임 완료를 요청했습니다.</summary>
+    PartyNotInGame = 19,
+
+    /// <summary>비어 있는 게임 방 식별자를 전달했습니다.</summary>
+    InvalidRoomId = 20,
+
+    /// <summary>현재 참가 중인 방과 다른 roomId로 게임 완료를 요청했습니다.</summary>
+    RoomIdMismatch = 21,
 }

@@ -20,12 +20,14 @@ public sealed class PartyRecord
         Guid partyId,
         int lifecycle,
         Guid? leaderPlayerId,
+        Guid? currentRoomId,
         DateTimeOffset createdAt,
         DateTimeOffset updatedAt)
     {
         PartyId = partyId;
         Lifecycle = lifecycle;
         LeaderPlayerId = leaderPlayerId;
+        CurrentRoomId = currentRoomId;
         CreatedAt = createdAt;
         UpdatedAt = updatedAt;
     }
@@ -39,6 +41,9 @@ public sealed class PartyRecord
     /// <summary>현재 리더의 플레이어 식별자이며, 해산된 파티에서는 null입니다.</summary>
     public Guid? LeaderPlayerId { get; private set; }
 
+    /// <summary>현재 참가 중인 게임 방 식별자이며, InGame 상태가 아니면 null입니다.</summary>
+    public Guid? CurrentRoomId { get; private set; }
+
     /// <summary>파티가 최초 생성된 UTC(Coordinated Universal Time, 협정 세계시) 시각입니다.</summary>
     public DateTimeOffset CreatedAt { get; private set; }
 
@@ -48,10 +53,15 @@ public sealed class PartyRecord
     /// <summary>
     /// 파티의 현재 생명 주기와 리더를 최신 상태로 갱신합니다.
     /// </summary>
-    public void Update(int lifecycle, Guid? leaderPlayerId, DateTimeOffset updatedAt)
+    public void Update(
+        int lifecycle,
+        Guid? leaderPlayerId,
+        Guid? currentRoomId,
+        DateTimeOffset updatedAt)
     {
         Lifecycle = lifecycle;
         LeaderPlayerId = leaderPlayerId;
+        CurrentRoomId = currentRoomId;
         UpdatedAt = updatedAt;
     }
 }

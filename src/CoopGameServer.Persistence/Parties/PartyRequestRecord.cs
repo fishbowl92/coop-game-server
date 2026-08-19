@@ -20,21 +20,25 @@ public sealed class PartyRequestRecord
         Guid requestId,
         Guid partyId,
         string commandKind,
-        Guid playerId,
+        Guid? playerId,
+        Guid? roomId,
         int resultError,
         int? resultLifecycle,
         Guid? resultLeaderPlayerId,
         Guid[]? resultMemberPlayerIds,
+        Guid? resultCurrentRoomId,
         DateTimeOffset createdAt)
     {
         RequestId = requestId;
         PartyId = partyId;
         CommandKind = commandKind;
         PlayerId = playerId;
+        RoomId = roomId;
         ResultError = resultError;
         ResultLifecycle = resultLifecycle;
         ResultLeaderPlayerId = resultLeaderPlayerId;
         ResultMemberPlayerIds = resultMemberPlayerIds;
+        ResultCurrentRoomId = resultCurrentRoomId;
         CreatedAt = createdAt;
     }
 
@@ -44,11 +48,14 @@ public sealed class PartyRequestRecord
     /// <summary>명령 대상 PartyGrain의 식별자입니다.</summary>
     public Guid PartyId { get; private set; }
 
-    /// <summary>Create, Join, Leave, Disband 중 하나인 명령 종류입니다.</summary>
+    /// <summary>파티 생성·멤버 변경·매칭·게임 상태 전이 중 하나인 명령 종류입니다.</summary>
     public string CommandKind { get; private set; } = string.Empty;
 
-    /// <summary>명령 본문에 포함된 리더 또는 멤버 플레이어 식별자입니다.</summary>
-    public Guid PlayerId { get; private set; }
+    /// <summary>리더 또는 멤버를 대상으로 하는 명령의 플레이어 식별자입니다.</summary>
+    public Guid? PlayerId { get; private set; }
+
+    /// <summary>게임 시작·완료 명령의 게임 방 식별자입니다.</summary>
+    public Guid? RoomId { get; private set; }
 
     /// <summary>최초 응답의 PartyCommandError 값을 정수로 저장합니다.</summary>
     public int ResultError { get; private set; }
@@ -61,6 +68,9 @@ public sealed class PartyRequestRecord
 
     /// <summary>최초 응답 시점의 가입 순서가 보존된 멤버 배열입니다.</summary>
     public Guid[]? ResultMemberPlayerIds { get; private set; }
+
+    /// <summary>최초 응답 시점에 파티가 참가 중이던 게임 방 식별자입니다.</summary>
+    public Guid? ResultCurrentRoomId { get; private set; }
 
     /// <summary>명령을 최초 처리한 UTC 시각입니다.</summary>
     public DateTimeOffset CreatedAt { get; private set; }

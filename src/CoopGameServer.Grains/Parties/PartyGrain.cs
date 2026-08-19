@@ -46,7 +46,8 @@ public sealed class PartyGrain(IDbContextFactory<GameDbContext> dbContextFactory
             _state = PartyState.Restore(
                 (PartyLifecycle)party.Lifecycle,
                 party.LeaderPlayerId,
-                memberPlayerIds);
+                memberPlayerIds,
+                party.CurrentRoomId);
         }
 
         await base.OnActivateAsync(cancellationToken);
@@ -59,6 +60,7 @@ public sealed class PartyGrain(IDbContextFactory<GameDbContext> dbContextFactory
             requestId,
             PartyCommandKind.Create,
             leaderPlayerId,
+            roomId: null,
             state => state.Create(GetPartyId(), leaderPlayerId));
     }
 
@@ -75,6 +77,7 @@ public sealed class PartyGrain(IDbContextFactory<GameDbContext> dbContextFactory
             requestId,
             PartyCommandKind.Join,
             playerId,
+            roomId: null,
             state => state.Join(GetPartyId(), playerId));
     }
 
@@ -85,6 +88,7 @@ public sealed class PartyGrain(IDbContextFactory<GameDbContext> dbContextFactory
             requestId,
             PartyCommandKind.Leave,
             playerId,
+            roomId: null,
             state => state.Leave(GetPartyId(), playerId));
     }
 
@@ -95,7 +99,52 @@ public sealed class PartyGrain(IDbContextFactory<GameDbContext> dbContextFactory
             requestId,
             PartyCommandKind.Disband,
             leaderPlayerId,
+            roomId: null,
             state => state.Disband(GetPartyId(), leaderPlayerId));
+    }
+
+    /// <inheritdoc />
+    public Task<PartyCommandResult> QueueForMatchAsync(Guid requestId, Guid leaderPlayerId)
+    {
+        return ExecuteCommandAsync(
+            requestId,
+            PartyCommandKind.QueueForMatch,
+            leaderPlayerId,
+            roomId: null,
+            state => state.QueueForMatch(GetPartyId(), leaderPlayerId));
+    }
+
+    /// <inheritdoc />
+    public Task<PartyCommandResult> CancelMatchQueueAsync(Guid requestId, Guid leaderPlayerId)
+    {
+        return ExecuteCommandAsync(
+            requestId,
+            PartyCommandKind.CancelMatchQueue,
+            leaderPlayerId,
+            roomId: null,
+            state => state.CancelMatchQueue(GetPartyId(), leaderPlayerId));
+    }
+
+    /// <inheritdoc />
+    public Task<PartyCommandResult> StartGameAsync(Guid requestId, Guid roomId)
+    {
+        return ExecuteCommandAsync(
+            requestId,
+            PartyCommandKind.StartGame,
+            playerId: null,
+            roomId,
+            state => state.StartGame(GetPartyId(), roomId));
+    }
+
+    /// <inheritdoc />
+    public Task<PartyCommandResult> CompleteGameAsync(Guid requestId, Guid roomId)
+    {
+        return ExecuteCommandAsync(
+            requestId,
+            PartyCommandKind.CompleteGame,
+            playerId: null,
+            roomId,
+            state => state.CompleteGame(GetPartyId(), roomId));
     }
 
     /// <summary>
@@ -104,7 +153,8 @@ public sealed class PartyGrain(IDbContextFactory<GameDbContext> dbContextFactory
     private async Task<PartyCommandResult> ExecuteCommandAsync(
         Guid requestId,
         PartyCommandKind commandKind,
-        Guid playerId,
+        Guid? playerId,
+        Guid? roomId,
         Func<PartyState, PartyCommandResult> executeCommand)
     {
         var partyId = GetPartyId();
@@ -132,7 +182,12 @@ public sealed class PartyGrain(IDbContextFactory<GameDbContext> dbContextFactory
             if (storedRequest is not null)
             {
                 await transaction.CommitAsync();
-                return RestoreStoredResultOrConflict(storedRequest, partyId, commandKind, playerId);
+                return RestoreStoredResultOrConflict(
+                    storedRequest,
+                    partyId,
+                    commandKind,
+                    playerId,
+                    roomId);
             }
 
             // 후보 상태에 먼저 게임 규칙을 적용합니다. DB 저장이 실패하면 후보를 버리고 기존 _state를 유지합니다.
@@ -143,7 +198,8 @@ public sealed class PartyGrain(IDbContextFactory<GameDbContext> dbContextFactory
             // 예를 들어 이미 해산된 파티라면 낯선 플레이어 ID보다 PartyDisbanded가 먼저 반환되어야 합니다.
             if (result.Error == PartyCommandError.None
                 && RequiresExistingPlayer(commandKind)
-                && !await gameDbContext.Players.AsNoTracking().AnyAsync(entity => entity.Id == playerId))
+                && playerId is Guid existingPlayerId
+                && !await gameDbContext.Players.AsNoTracking().AnyAsync(entity => entity.Id == existingPlayerId))
             {
                 candidateState = _state.Clone();
                 result = candidateState.Failure(partyId, PartyCommandError.PlayerNotFound);
@@ -159,6 +215,7 @@ public sealed class PartyGrain(IDbContextFactory<GameDbContext> dbContextFactory
                 partyId,
                 commandKind,
                 playerId,
+                roomId,
                 result));
 
             await gameDbContext.SaveChangesAsync();
@@ -173,21 +230,38 @@ public sealed class PartyGrain(IDbContextFactory<GameDbContext> dbContextFactory
             // 서로 다른 Grain이 같은 requestId를 동시에 삽입했다면 한쪽만 성공합니다.
             // 실패한 쪽은 롤백한 뒤 승자의 최초 결과를 읽어 재생 또는 충돌로 판정합니다.
             await transaction.RollbackAsync();
-            return await ReadStoredResultOrConflictAsync(requestId, partyId, commandKind, playerId);
+            return await ReadStoredResultOrConflictAsync(
+                requestId,
+                partyId,
+                commandKind,
+                playerId,
+                roomId);
         }
         catch (DbUpdateException exception) when (HasConstraint(exception, PartyMemberPlayerUniqueConstraint))
         {
             // 서로 다른 PartyGrain은 Orleans 실행 큐를 공유하지 않으므로 DB UNIQUE 제약이 최종 동시성 방어선입니다.
             await transaction.RollbackAsync();
             var failure = _state.Failure(partyId, PartyCommandError.PlayerAlreadyInAnotherParty);
-            return await StoreFailureOrReadRaceAsync(requestId, partyId, commandKind, playerId, failure);
+            return await StoreFailureOrReadRaceAsync(
+                requestId,
+                partyId,
+                commandKind,
+                playerId,
+                roomId,
+                failure);
         }
         catch (DbUpdateException exception) when (HasConstraint(exception, PartyMemberPlayerForeignKeyConstraint))
         {
             // 존재 확인 직후 플레이어가 삭제되는 극히 짧은 경쟁 상황도 외래 키 위반을 업무 오류로 변환합니다.
             await transaction.RollbackAsync();
             var failure = _state.Failure(partyId, PartyCommandError.PlayerNotFound);
-            return await StoreFailureOrReadRaceAsync(requestId, partyId, commandKind, playerId, failure);
+            return await StoreFailureOrReadRaceAsync(
+                requestId,
+                partyId,
+                commandKind,
+                playerId,
+                roomId,
+                failure);
         }
     }
 
@@ -208,13 +282,18 @@ public sealed class PartyGrain(IDbContextFactory<GameDbContext> dbContextFactory
                 snapshot.PartyId,
                 (int)snapshot.Lifecycle,
                 snapshot.LeaderPlayerId,
+                snapshot.CurrentRoomId,
                 now,
                 now);
             gameDbContext.Parties.Add(party);
         }
         else
         {
-            party.Update((int)snapshot.Lifecycle, snapshot.LeaderPlayerId, now);
+            party.Update(
+                (int)snapshot.Lifecycle,
+                snapshot.LeaderPlayerId,
+                snapshot.CurrentRoomId,
+                now);
         }
 
         var storedMembers = await gameDbContext.PartyMembers
@@ -252,7 +331,8 @@ public sealed class PartyGrain(IDbContextFactory<GameDbContext> dbContextFactory
         Guid requestId,
         Guid partyId,
         PartyCommandKind commandKind,
-        Guid playerId,
+        Guid? playerId,
+        Guid? roomId,
         PartyCommandResult failure)
     {
         await using var gameDbContext = await dbContextFactory.CreateDbContextAsync();
@@ -263,7 +343,12 @@ public sealed class PartyGrain(IDbContextFactory<GameDbContext> dbContextFactory
 
         if (storedRequest is not null)
         {
-            return RestoreStoredResultOrConflict(storedRequest, partyId, commandKind, playerId);
+            return RestoreStoredResultOrConflict(
+                storedRequest,
+                partyId,
+                commandKind,
+                playerId,
+                roomId);
         }
 
         gameDbContext.PartyRequests.Add(CreateRequestRecord(
@@ -271,6 +356,7 @@ public sealed class PartyGrain(IDbContextFactory<GameDbContext> dbContextFactory
             partyId,
             commandKind,
             playerId,
+            roomId,
             failure));
 
         try
@@ -280,7 +366,12 @@ public sealed class PartyGrain(IDbContextFactory<GameDbContext> dbContextFactory
         }
         catch (DbUpdateException exception) when (HasConstraint(exception, PartyRequestPrimaryKeyConstraint))
         {
-            return await ReadStoredResultOrConflictAsync(requestId, partyId, commandKind, playerId);
+            return await ReadStoredResultOrConflictAsync(
+                requestId,
+                partyId,
+                commandKind,
+                playerId,
+                roomId);
         }
     }
 
@@ -291,14 +382,20 @@ public sealed class PartyGrain(IDbContextFactory<GameDbContext> dbContextFactory
         Guid requestId,
         Guid partyId,
         PartyCommandKind commandKind,
-        Guid playerId)
+        Guid? playerId,
+        Guid? roomId)
     {
         await using var gameDbContext = await dbContextFactory.CreateDbContextAsync();
         var storedRequest = await gameDbContext.PartyRequests
             .AsNoTracking()
             .SingleAsync(entity => entity.RequestId == requestId);
 
-        return RestoreStoredResultOrConflict(storedRequest, partyId, commandKind, playerId);
+        return RestoreStoredResultOrConflict(
+            storedRequest,
+            partyId,
+            commandKind,
+            playerId,
+            roomId);
     }
 
     /// <summary>
@@ -308,11 +405,13 @@ public sealed class PartyGrain(IDbContextFactory<GameDbContext> dbContextFactory
         PartyRequestRecord storedRequest,
         Guid partyId,
         PartyCommandKind commandKind,
-        Guid playerId)
+        Guid? playerId,
+        Guid? roomId)
     {
         if (storedRequest.PartyId != partyId
             || storedRequest.CommandKind != commandKind.ToString()
-            || storedRequest.PlayerId != playerId)
+            || storedRequest.PlayerId != playerId
+            || storedRequest.RoomId != roomId)
         {
             return _state.Failure(partyId, PartyCommandError.RequestIdConflict);
         }
@@ -324,7 +423,8 @@ public sealed class PartyGrain(IDbContextFactory<GameDbContext> dbContextFactory
                 storedRequest.PartyId,
                 (PartyLifecycle)resultLifecycle,
                 storedRequest.ResultLeaderPlayerId,
-                storedRequest.ResultMemberPlayerIds?.ToArray() ?? []);
+                storedRequest.ResultMemberPlayerIds?.ToArray() ?? [],
+                storedRequest.ResultCurrentRoomId);
         }
 
         return new PartyCommandResult(
@@ -340,7 +440,8 @@ public sealed class PartyGrain(IDbContextFactory<GameDbContext> dbContextFactory
         Guid requestId,
         Guid partyId,
         PartyCommandKind commandKind,
-        Guid playerId,
+        Guid? playerId,
+        Guid? roomId,
         PartyCommandResult result)
     {
         return new PartyRequestRecord(
@@ -348,10 +449,12 @@ public sealed class PartyGrain(IDbContextFactory<GameDbContext> dbContextFactory
             partyId,
             commandKind.ToString(),
             playerId,
+            roomId,
             (int)result.Error,
             result.Party is null ? null : (int)result.Party.Lifecycle,
             result.Party?.LeaderPlayerId,
             result.Party?.MemberPlayerIds.ToArray(),
+            result.Party?.CurrentRoomId,
             DateTimeOffset.UtcNow);
     }
 
@@ -377,5 +480,9 @@ public sealed class PartyGrain(IDbContextFactory<GameDbContext> dbContextFactory
         Join,
         Leave,
         Disband,
+        QueueForMatch,
+        CancelMatchQueue,
+        StartGame,
+        CompleteGame,
     }
 }

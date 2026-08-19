@@ -1,3 +1,4 @@
+using CoopGameServer.GrainContracts.GameRooms;
 using CoopGameServer.GrainContracts.Matchmaking;
 using CoopGameServer.IntegrationTests.Infrastructure;
 using Microsoft.EntityFrameworkCore;
@@ -300,14 +301,20 @@ public sealed class MatchQueueGrainTests(OrleansTestClusterFixture fixture)
         await _cluster.RestartSiloAsync(_cluster.Primary);
 
         var restoredQueue = GetQueue(queueKey);
+        var restoredRoom = _cluster.GrainFactory.GetGrain<IGameRoomGrain>(match.RoomId);
         var restoredPartyTicket = Assert.IsType<MatchQueueTicket>(await restoredQueue.GetTicketAsync(partyTicketId));
         var restoredSoloTicket = Assert.IsType<MatchQueueTicket>(await restoredQueue.GetTicketAsync(soloTicketId));
+        var restoredRoomSnapshot = Assert.IsType<GameRoomSnapshot>(await restoredRoom.GetAsync());
 
         Assert.Equal(MatchQueueTicketStatus.Matched, restoredPartyTicket.Status);
         Assert.Equal(MatchQueueTicketStatus.Matched, restoredSoloTicket.Status);
         Assert.Equal(match.RoomId, restoredPartyTicket.RoomId);
         Assert.Equal(match.RoomId, restoredSoloTicket.RoomId);
         Assert.Empty((await restoredQueue.GetSnapshotAsync()).QueuedTickets);
+        Assert.Equal(GameRoomLifecycle.Ready, restoredRoomSnapshot.Lifecycle);
+        Assert.Equal(match.QueueKey, restoredRoomSnapshot.QueueKey);
+        Assert.Equal(match.PartyIds, restoredRoomSnapshot.PartyIds);
+        Assert.Equal(match.PlayerIds, restoredRoomSnapshot.PlayerIds);
     }
 
     [Fact]

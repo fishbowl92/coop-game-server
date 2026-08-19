@@ -3,6 +3,7 @@ using CoopGameServer.Domain.Inventories;
 using CoopGameServer.Domain.Players;
 using CoopGameServer.Domain.Rewards;
 using CoopGameServer.Domain.Wallets;
+using CoopGameServer.Persistence.GameRooms;
 using CoopGameServer.Persistence.Matchmaking;
 using CoopGameServer.Persistence.Parties;
 using Microsoft.EntityFrameworkCore;
@@ -71,6 +72,12 @@ public sealed class GameDbContext : DbContext
 
     /// <summary>match_queue_requests 테이블에 대응하는 매칭 대기열 명령 기록 집합입니다.</summary>
     public DbSet<MatchQueueRequestRecord> MatchQueueRequests => Set<MatchQueueRequestRecord>();
+
+    /// <summary>game_rooms 테이블에 대응하는 게임 방 현재 상태 집합입니다.</summary>
+    public DbSet<GameRoomRecord> GameRooms => Set<GameRoomRecord>();
+
+    /// <summary>game_room_requests 테이블에 대응하는 게임 방 명령 처리 기록 집합입니다.</summary>
+    public DbSet<GameRoomRequestRecord> GameRoomRequests => Set<GameRoomRequestRecord>();
 
     /// <summary>
     /// C# Player 객체와 PostgreSQL players 테이블 사이의 세부 규칙을 정의합니다.
@@ -254,6 +261,7 @@ public sealed class GameDbContext : DbContext
 
         ConfigurePartyPersistence(modelBuilder);
         ConfigureMatchQueuePersistence(modelBuilder);
+        ConfigureGameRoomPersistence(modelBuilder);
     }
 
     /// <summary>
@@ -263,7 +271,17 @@ public sealed class GameDbContext : DbContext
     {
         var party = modelBuilder.Entity<PartyRecord>();
 
-        party.ToTable("parties");
+        party.ToTable(
+            "parties",
+            table =>
+            {
+                table.HasCheckConstraint("CK_parties_lifecycle", "lifecycle IN (0, 1, 2, 3)");
+                table.HasCheckConstraint(
+                    "CK_parties_state_shape",
+                    "(lifecycle = 1 AND leader_player_id IS NULL AND current_room_id IS NULL) OR "
+                    + "(lifecycle IN (0, 2) AND leader_player_id IS NOT NULL AND current_room_id IS NULL) OR "
+                    + "(lifecycle = 3 AND leader_player_id IS NOT NULL AND current_room_id IS NOT NULL)");
+            });
         party.HasKey(entity => entity.PartyId);
         party.Property(entity => entity.PartyId)
             .HasColumnName("party_id")
@@ -273,6 +291,8 @@ public sealed class GameDbContext : DbContext
             .IsRequired();
         party.Property(entity => entity.LeaderPlayerId)
             .HasColumnName("leader_player_id");
+        party.Property(entity => entity.CurrentRoomId)
+            .HasColumnName("current_room_id");
         party.Property(entity => entity.CreatedAt)
             .HasColumnName("created_at")
             .HasColumnType("timestamp with time zone")
@@ -315,7 +335,13 @@ public sealed class GameDbContext : DbContext
 
         var partyRequest = modelBuilder.Entity<PartyRequestRecord>();
 
-        partyRequest.ToTable("party_requests");
+        partyRequest.ToTable(
+            "party_requests",
+            table => table.HasCheckConstraint(
+                "CK_party_requests_command_subject",
+                "(command_kind IN ('StartGame', 'CompleteGame') AND player_id IS NULL AND room_id IS NOT NULL) OR "
+                + "(command_kind IN ('Create', 'Join', 'Leave', 'Disband', 'QueueForMatch', 'CancelMatchQueue') "
+                + "AND player_id IS NOT NULL AND room_id IS NULL)"));
         partyRequest.HasKey(entity => entity.RequestId);
         partyRequest.Property(entity => entity.RequestId)
             .HasColumnName("request_id")
@@ -330,6 +356,8 @@ public sealed class GameDbContext : DbContext
         partyRequest.Property(entity => entity.PlayerId)
             .HasColumnName("player_id")
             .ValueGeneratedNever();
+        partyRequest.Property(entity => entity.RoomId)
+            .HasColumnName("room_id");
         partyRequest.Property(entity => entity.ResultError)
             .HasColumnName("result_error")
             .IsRequired();
@@ -340,6 +368,8 @@ public sealed class GameDbContext : DbContext
         partyRequest.Property(entity => entity.ResultMemberPlayerIds)
             .HasColumnName("result_member_player_ids")
             .HasColumnType("uuid[]");
+        partyRequest.Property(entity => entity.ResultCurrentRoomId)
+            .HasColumnName("result_current_room_id");
         partyRequest.Property(entity => entity.CreatedAt)
             .HasColumnName("created_at")
             .HasColumnType("timestamp with time zone")
@@ -458,5 +488,93 @@ public sealed class GameDbContext : DbContext
             .IsRequired();
         request.HasIndex(entity => entity.QueueKey)
             .HasDatabaseName("IX_match_queue_requests_queue_key");
+    }
+
+    /// <summary>
+    /// 게임 방의 4인 구성·생명 주기와 멱등성 요청 결과를 PostgreSQL에 저장하는 규칙입니다.
+    /// </summary>
+    private static void ConfigureGameRoomPersistence(ModelBuilder modelBuilder)
+    {
+        var room = modelBuilder.Entity<GameRoomRecord>();
+
+        room.ToTable(
+            "game_rooms",
+            table =>
+            {
+                table.HasCheckConstraint("CK_game_rooms_lifecycle", "lifecycle IN (0, 1, 2)");
+                table.HasCheckConstraint("CK_game_rooms_four_players", "cardinality(player_ids) = 4");
+                table.HasCheckConstraint("CK_game_rooms_party_count", "cardinality(party_ids) <= 4");
+                table.HasCheckConstraint(
+                    "CK_game_rooms_lifecycle_times",
+                    "(lifecycle = 0 AND started_at IS NULL AND completed_at IS NULL) OR "
+                    + "(lifecycle = 1 AND started_at IS NOT NULL AND completed_at IS NULL) OR "
+                    + "(lifecycle = 2 AND started_at IS NOT NULL AND completed_at IS NOT NULL)");
+            });
+        room.HasKey(entity => entity.RoomId);
+        room.Property(entity => entity.RoomId)
+            .HasColumnName("room_id")
+            .ValueGeneratedNever();
+        room.Property(entity => entity.QueueKey)
+            .HasColumnName("queue_key")
+            .HasMaxLength(100)
+            .IsRequired();
+        room.Property(entity => entity.Lifecycle)
+            .HasColumnName("lifecycle")
+            .IsRequired();
+        room.Property(entity => entity.PartyIds)
+            .HasColumnName("party_ids")
+            .HasColumnType("uuid[]")
+            .IsRequired();
+        room.Property(entity => entity.PlayerIds)
+            .HasColumnName("player_ids")
+            .HasColumnType("uuid[]")
+            .IsRequired();
+        room.Property(entity => entity.CreatedAt)
+            .HasColumnName("created_at")
+            .HasColumnType("timestamp with time zone")
+            .IsRequired();
+        room.Property(entity => entity.StartedAt)
+            .HasColumnName("started_at")
+            .HasColumnType("timestamp with time zone");
+        room.Property(entity => entity.CompletedAt)
+            .HasColumnName("completed_at")
+            .HasColumnType("timestamp with time zone");
+        room.HasIndex(entity => new { entity.QueueKey, entity.Lifecycle, entity.CreatedAt })
+            .HasDatabaseName("IX_game_rooms_queue_key_lifecycle_created_at");
+
+        var request = modelBuilder.Entity<GameRoomRequestRecord>();
+
+        request.ToTable(
+            "game_room_requests",
+            table => table.HasCheckConstraint(
+                "CK_game_room_requests_payload_shape",
+                "(command_kind = 'Create' AND request_payload_json IS NOT NULL) OR "
+                + "(command_kind IN ('Start', 'Complete') AND request_payload_json IS NULL)"));
+        request.HasKey(entity => entity.RequestId);
+        request.Property(entity => entity.RequestId)
+            .HasColumnName("request_id")
+            .ValueGeneratedNever();
+        request.Property(entity => entity.RoomId)
+            .HasColumnName("room_id")
+            .ValueGeneratedNever();
+        request.Property(entity => entity.CommandKind)
+            .HasColumnName("command_kind")
+            .HasMaxLength(20)
+            .IsRequired();
+        request.Property(entity => entity.RequestPayloadJson)
+            .HasColumnName("request_payload_json")
+            .HasColumnType("jsonb");
+        request.Property(entity => entity.ResultPayloadJson)
+            .HasColumnName("result_payload_json")
+            .HasColumnType("jsonb")
+            .IsRequired();
+        request.Property(entity => entity.CreatedAt)
+            .HasColumnName("created_at")
+            .HasColumnType("timestamp with time zone")
+            .IsRequired();
+        request.HasIndex(entity => entity.RoomId)
+            .HasDatabaseName("IX_game_room_requests_room_id");
+
+        // 생성 실패 결과도 보존해야 하므로 game_room_requests는 game_rooms와 외래 키로 묶지 않습니다.
     }
 }

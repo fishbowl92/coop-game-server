@@ -189,6 +189,106 @@ public sealed class PartyGrainTests(OrleansTestClusterFixture fixture)
     }
 
     [Fact]
+    public async Task QueueForMatchFreezesMembersAndOnlyLeaderCanCancel()
+    {
+        var leaderPlayerId = Guid.NewGuid();
+        var memberPlayerId = Guid.NewGuid();
+        var waitingPlayerId = Guid.NewGuid();
+        var party = await CreatePartyAsync(leaderPlayerId);
+        await _fixture.RegisterPlayersAsync(memberPlayerId, waitingPlayerId);
+        await party.JoinAsync(Guid.NewGuid(), memberPlayerId);
+
+        var nonLeaderQueueResult = await party.QueueForMatchAsync(Guid.NewGuid(), memberPlayerId);
+        var queueResult = await party.QueueForMatchAsync(Guid.NewGuid(), leaderPlayerId);
+        var joinResult = await party.JoinAsync(Guid.NewGuid(), waitingPlayerId);
+        var leaveResult = await party.LeaveAsync(Guid.NewGuid(), memberPlayerId);
+        var disbandResult = await party.DisbandAsync(Guid.NewGuid(), leaderPlayerId);
+        var nonLeaderCancelResult = await party.CancelMatchQueueAsync(Guid.NewGuid(), memberPlayerId);
+        var cancelResult = await party.CancelMatchQueueAsync(Guid.NewGuid(), leaderPlayerId);
+
+        Assert.Equal(PartyCommandError.OnlyLeaderCanManageMatchmaking, nonLeaderQueueResult.Error);
+
+        var queuedSnapshot = Assert.IsType<PartySnapshot>(queueResult.Party);
+        Assert.Equal(PartyLifecycle.MatchQueued, queuedSnapshot.Lifecycle);
+        Assert.Null(queuedSnapshot.CurrentRoomId);
+        Assert.Equal([leaderPlayerId, memberPlayerId], queuedSnapshot.MemberPlayerIds);
+
+        Assert.Equal(PartyCommandError.PartyMatchQueued, joinResult.Error);
+        Assert.Equal(PartyCommandError.PartyMatchQueued, leaveResult.Error);
+        Assert.Equal(PartyCommandError.PartyMatchQueued, disbandResult.Error);
+        Assert.Equal(PartyCommandError.OnlyLeaderCanManageMatchmaking, nonLeaderCancelResult.Error);
+
+        var activeSnapshot = Assert.IsType<PartySnapshot>(cancelResult.Party);
+        Assert.Equal(PartyLifecycle.Active, activeSnapshot.Lifecycle);
+        Assert.Null(activeSnapshot.CurrentRoomId);
+        Assert.Equal([leaderPlayerId, memberPlayerId], activeSnapshot.MemberPlayerIds);
+    }
+
+    [Fact]
+    public async Task GameLifecycleRequiresQueuedPartyAndMatchingRoomId()
+    {
+        var leaderPlayerId = Guid.NewGuid();
+        var memberPlayerId = Guid.NewGuid();
+        var roomId = Guid.NewGuid();
+        var party = await CreatePartyAsync(leaderPlayerId);
+        await _fixture.RegisterPlayersAsync(memberPlayerId);
+        await party.JoinAsync(Guid.NewGuid(), memberPlayerId);
+
+        var earlyStartResult = await party.StartGameAsync(Guid.NewGuid(), roomId);
+        await party.QueueForMatchAsync(Guid.NewGuid(), leaderPlayerId);
+        var emptyRoomResult = await party.StartGameAsync(Guid.NewGuid(), Guid.Empty);
+        var startResult = await party.StartGameAsync(Guid.NewGuid(), roomId);
+        var leaveResult = await party.LeaveAsync(Guid.NewGuid(), memberPlayerId);
+        var wrongRoomResult = await party.CompleteGameAsync(Guid.NewGuid(), Guid.NewGuid());
+        var completeResult = await party.CompleteGameAsync(Guid.NewGuid(), roomId);
+
+        Assert.Equal(PartyCommandError.PartyNotMatchQueued, earlyStartResult.Error);
+        Assert.Equal(PartyCommandError.InvalidRoomId, emptyRoomResult.Error);
+
+        var inGameSnapshot = Assert.IsType<PartySnapshot>(startResult.Party);
+        Assert.Equal(PartyLifecycle.InGame, inGameSnapshot.Lifecycle);
+        Assert.Equal(roomId, inGameSnapshot.CurrentRoomId);
+        Assert.Equal(PartyCommandError.PartyInGame, leaveResult.Error);
+        Assert.Equal(PartyCommandError.RoomIdMismatch, wrongRoomResult.Error);
+
+        var activeSnapshot = Assert.IsType<PartySnapshot>(completeResult.Party);
+        Assert.Equal(PartyLifecycle.Active, activeSnapshot.Lifecycle);
+        Assert.Null(activeSnapshot.CurrentRoomId);
+        Assert.Equal([leaderPlayerId, memberPlayerId], activeSnapshot.MemberPlayerIds);
+    }
+
+    [Fact]
+    public async Task InGameStateAndStartRequestReplaySurviveSiloRestart()
+    {
+        var partyId = Guid.NewGuid();
+        var leaderPlayerId = Guid.NewGuid();
+        var roomId = Guid.NewGuid();
+        var startRequestId = Guid.NewGuid();
+        await _fixture.RegisterPlayersAsync(leaderPlayerId);
+
+        var party = GetParty(partyId);
+        await party.CreateAsync(Guid.NewGuid(), leaderPlayerId);
+        await party.QueueForMatchAsync(Guid.NewGuid(), leaderPlayerId);
+        var firstStartResult = await party.StartGameAsync(startRequestId, roomId);
+
+        // 재시작으로 Grain 메모리를 폐기한 뒤 parties와 party_requests에서 상태와 최초 응답을 복원합니다.
+        await _cluster.RestartSiloAsync(_cluster.Primary);
+
+        var restoredParty = GetParty(partyId);
+        var restoredSnapshot = Assert.IsType<PartySnapshot>(await restoredParty.GetAsync());
+        var replayResult = await restoredParty.StartGameAsync(startRequestId, roomId);
+        var conflictResult = await restoredParty.StartGameAsync(startRequestId, Guid.NewGuid());
+
+        Assert.Equal(PartyLifecycle.InGame, restoredSnapshot.Lifecycle);
+        Assert.Equal(roomId, restoredSnapshot.CurrentRoomId);
+
+        Assert.True(replayResult.IsReplay);
+        Assert.Equal(firstStartResult.Error, replayResult.Error);
+        Assert.Equal(roomId, Assert.IsType<PartySnapshot>(replayResult.Party).CurrentRoomId);
+        Assert.Equal(PartyCommandError.RequestIdConflict, conflictResult.Error);
+    }
+
+    [Fact]
     public async Task ConcurrentJoinsNeverExceedFourMembers()
     {
         var party = await CreatePartyAsync(Guid.NewGuid());
