@@ -276,7 +276,7 @@ public sealed class MatchQueueGrainTests(OrleansTestClusterFixture fixture)
         var firstTicket = Assert.IsType<MatchQueueTicket>(firstResult.Ticket);
 
         // 실제 테스트 Silo 재시작으로 모든 Grain 메모리를 폐기한 뒤 PostgreSQL 복원을 검증합니다.
-        await _cluster.RestartSiloAsync(_cluster.Primary);
+        await _fixture.RestartAllSilosAsync();
 
         var restoredQueue = GetQueue(queueKey);
         var restoredTicket = Assert.IsType<MatchQueueTicket>(await restoredQueue.GetTicketAsync(firstTicket.TicketId));
@@ -301,7 +301,7 @@ public sealed class MatchQueueGrainTests(OrleansTestClusterFixture fixture)
         var partyTicketId = Assert.IsType<MatchQueueTicket>(partyResult.Ticket).TicketId;
         var soloTicketId = Assert.IsType<MatchQueueTicket>(matchResult.Ticket).TicketId;
 
-        await _cluster.RestartSiloAsync(_cluster.Primary);
+        await _fixture.RestartAllSilosAsync();
 
         var restoredQueue = GetQueue(queueKey);
         var restoredRoom = _cluster.GrainFactory.GetGrain<IGameRoomGrain>(match.RoomId);
@@ -407,7 +407,9 @@ public sealed class MatchQueueGrainTests(OrleansTestClusterFixture fixture)
         Assert.Equal(expected.MemberPlayerIds, actual.MemberPlayerIds);
         Assert.Equal(expected.Status, actual.Status);
         Assert.Equal(expected.RoomId, actual.RoomId);
-        Assert.Equal(expected.EnqueuedAt, actual.EnqueuedAt);
+        // .NET은 100나노초 단위까지 표현하지만 PostgreSQL timestamptz는 마이크로초 단위로 저장합니다.
+        // Silo 재시작 뒤 DB에서 복원된 값은 마지막 자릿수가 달라질 수 있으므로 저장 정밀도 안에서 비교합니다.
+        Assert.Equal(expected.EnqueuedAt, actual.EnqueuedAt, TimeSpan.FromMicroseconds(1));
         Assert.Equal(expected.QueueOrder, actual.QueueOrder);
     }
 }

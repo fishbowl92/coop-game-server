@@ -132,7 +132,7 @@ public sealed class GameRoomGrainTests(OrleansTestClusterFixture fixture)
         var firstStartResult = await room.StartAsync(startRequestId);
 
         // 실제 Silo 재시작으로 GameRoomGrain 메모리를 버리고 PostgreSQL 행에서 다시 복원합니다.
-        await _cluster.RestartSiloAsync(_cluster.Primary);
+        await _fixture.RestartAllSilosAsync();
 
         var restoredRoom = GetRoom(assignment.RoomId);
         var restoredSnapshot = Assert.IsType<GameRoomSnapshot>(await restoredRoom.GetAsync());

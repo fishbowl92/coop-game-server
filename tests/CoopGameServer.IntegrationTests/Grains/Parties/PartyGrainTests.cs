@@ -272,7 +272,7 @@ public sealed class PartyGrainTests(OrleansTestClusterFixture fixture)
         var firstStartResult = await party.StartGameAsync(startRequestId, roomId);
 
         // 재시작으로 Grain 메모리를 폐기한 뒤 parties와 party_requests에서 상태와 최초 응답을 복원합니다.
-        await _cluster.RestartSiloAsync(_cluster.Primary);
+        await _fixture.RestartAllSilosAsync();
 
         var restoredParty = GetParty(partyId);
         var restoredSnapshot = Assert.IsType<PartySnapshot>(await restoredParty.GetAsync());
@@ -372,7 +372,7 @@ public sealed class PartyGrainTests(OrleansTestClusterFixture fixture)
 
         // 테스트 Silo를 실제로 재시작해 모든 PartyGrain 메모리를 폐기합니다.
         // 다음 호출에서 Grain이 다시 활성화되며 OnActivateAsync가 PostgreSQL 상태를 복원해야 합니다.
-        await _cluster.RestartSiloAsync(_cluster.Primary);
+        await _fixture.RestartAllSilosAsync();
 
         var restoredParty = GetParty(partyId);
         var restoredSnapshot = Assert.IsType<PartySnapshot>(await restoredParty.GetAsync());
