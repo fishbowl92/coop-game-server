@@ -29,6 +29,8 @@
 
     <!-- 순수 게임 규칙과 GameDbContext를 각 책임 프로젝트에서 직접 검증합니다. -->
     <ProjectReference Include="..\..\src\CoopGameServer.Domain\CoopGameServer.Domain.csproj" />
+    <!-- Orleans 프로세스 경계를 통과하는 PlayerGrain 계약과 직렬화 번호를 검증합니다. -->
+    <ProjectReference Include="..\..\src\CoopGameServer.GrainContracts\CoopGameServer.GrainContracts.csproj" />
     <ProjectReference Include="..\..\src\CoopGameServer.Persistence\CoopGameServer.Persistence.csproj" />
   </ItemGroup>
 
