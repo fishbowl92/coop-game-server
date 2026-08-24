@@ -1,4 +1,5 @@
 using CoopGameServer.Persistence;
+using CoopGameServer.Persistence.Rewards;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -18,6 +19,10 @@ var host = Host.CreateDefaultBuilder(args)
 
         services.AddPooledDbContextFactory<GameDbContext>(options =>
             options.UseNpgsql(gameDbConnectionString));
+
+        // PlayerGrain이 사용할 보상 Writer는 호출마다 Factory에서 새 DbContext를 빌립니다.
+        services.AddSingleton(TimeProvider.System);
+        services.AddSingleton<IRewardWriter, PostgreSqlRewardWriter>();
     })
     .UseOrleans(siloBuilder =>
     {

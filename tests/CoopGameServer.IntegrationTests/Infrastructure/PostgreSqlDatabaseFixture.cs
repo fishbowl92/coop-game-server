@@ -12,7 +12,7 @@ namespace CoopGameServer.IntegrationTests.Infrastructure;
 /// 테스트 실행마다 독립적인 빈 DB를 만들고 EF Core 마이그레이션을 적용하므로,
 /// 개발 데이터가 테스트 결과에 영향을 주거나 테스트가 개발 데이터를 오염시키지 않습니다.
 /// </remarks>
-public sealed class PostgreSqlDatabaseFixture : IAsyncLifetime
+public sealed class PostgreSqlDatabaseFixture : IAsyncLifetime, IDbContextFactory<GameDbContext>
 {
     private readonly PostgreSqlContainer _postgreSqlContainer = new PostgreSqlBuilder("postgres:17-alpine")
         .WithDatabase("coopgame_integration")
