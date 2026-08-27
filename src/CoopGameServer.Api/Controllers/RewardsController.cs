@@ -1,7 +1,7 @@
 using CoopGameServer.Api.Application.Rewards;
 using CoopGameServer.Api.Authentication;
 using CoopGameServer.Contracts.Rewards;
-using CoopGameServer.Persistence.Rewards;
+using CoopGameServer.GrainContracts.Players;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
@@ -19,7 +19,7 @@ public sealed class RewardsController : ControllerBase
     /// <summary>
     /// 보상 지급 서비스와 컨트롤러를 연결합니다.
     /// </summary>
-    /// <param name="rewardService">HTTP 요청을 영속성 명령으로 변환하는 임시 API 어댑터입니다.</param>
+    /// <param name="rewardService">HTTP 요청을 PlayerGrain 명령으로 변환하는 API 어댑터입니다.</param>
     public RewardsController(RewardService rewardService)
     {
         _rewardService = rewardService;
@@ -32,7 +32,8 @@ public sealed class RewardsController : ControllerBase
     /// <param name="request">멱등성 키와 보상 내용을 담은 요청 본문입니다.</param>
     /// <param name="cancellationToken">
     /// 작업 시작 전에 클라이언트 요청이 이미 취소됐는지 확인하는 토큰입니다.
-    /// 이미 시작한 멱등성 보상 기록은 서버가 결과를 확정할 때까지 기다립니다.
+    /// 호출 전 취소는 Grain 시작을 막고, 호출 뒤 취소는 HTTP 응답 대기만 중단합니다.
+    /// 이미 시작한 Grain 보상 처리는 Silo에서 결과를 끝까지 확정합니다.
     /// </param>
     /// <returns>
     /// 신규 보상 적용 시 201 Created, 같은 요청의 재시도면 200 OK를 반환합니다.
@@ -52,51 +53,56 @@ public sealed class RewardsController : ControllerBase
         [FromBody] GrantRewardRequest request,
         CancellationToken cancellationToken)
     {
-        GrantRewardResult? result;
-
-        try
-        {
-            result = await _rewardService.GrantAsync(playerId, request, cancellationToken);
-        }
-        catch (ArgumentNullException exception)
-        {
-            return ValidationProblem(
-                detail: exception.Message,
-                statusCode: StatusCodes.Status400BadRequest);
-        }
-        catch (ArgumentException exception)
-        {
-            return ValidationProblem(
-                detail: exception.Message,
-                statusCode: StatusCodes.Status400BadRequest);
-        }
-        catch (IdempotencyKeyConflictException exception)
-        {
-            return Conflict(new ProblemDetails
-            {
-                Title = "Idempotency key was reused with different reward data.",
-                Detail = exception.Message,
-                Status = StatusCodes.Status409Conflict,
-            });
-        }
-
-        if (result is null)
-        {
-            return NotFound();
-        }
-
-        var response = ToResponse(result.Receipt, result.IsReplay);
-
-        // 재전송은 새 리소스를 만들지 않았으므로 200, 최초 적용은 새 보상 이력을 만들었으므로 201을 사용합니다.
-        return result.IsReplay
-            ? Ok(response)
-            : StatusCode(StatusCodes.Status201Created, response);
+        var result = await _rewardService.GrantAsync(playerId, request, cancellationToken);
+        return ToActionResult(result);
     }
 
     /// <summary>
-    /// Persistence 영수증을 외부 API 응답 형식으로 변환합니다.
+    /// PlayerGrain의 업무 결과를 기존 보상 HTTP 상태와 응답 형식으로 변환합니다.
     /// </summary>
-    private static GrantRewardResponse ToResponse(RewardWriteReceipt receipt, bool isReplay)
+    private ActionResult<GrantRewardResponse> ToActionResult(PlayerRewardCommandResult result)
+    {
+        if (result.Status is PlayerRewardCommandStatus.Applied &&
+            result.Error is PlayerRewardCommandError.None)
+        {
+            var receipt = result.Receipt
+                ?? throw new InvalidOperationException("적용된 PlayerGrain 보상 결과에 영수증이 없습니다.");
+            var response = ToResponse(receipt, result.IsReplay);
+
+            // 재전송은 새 이력을 만들지 않았으므로 200, 최초 적용은 이력을 새로 만들었으므로 201입니다.
+            return result.IsReplay
+                ? Ok(response)
+                : StatusCode(StatusCodes.Status201Created, response);
+        }
+
+        // 관리자 명령의 예상 거부 결과는 재생 영수증을 포함하면 안 됩니다.
+        if (result.Status is not PlayerRewardCommandStatus.Rejected ||
+            result.IsReplay ||
+            result.Receipt is not null)
+        {
+            throw new InvalidOperationException(
+                $"관리자 보상 결과 조합이 유효하지 않습니다: Status={result.Status}, Error={result.Error}");
+        }
+
+        return result.Error switch
+        {
+            PlayerRewardCommandError.InvalidRequest => ValidationProblem(
+                detail: "Reward request values are invalid.",
+                statusCode: StatusCodes.Status400BadRequest),
+            PlayerRewardCommandError.PlayerNotFound => NotFound(),
+            PlayerRewardCommandError.IdempotencyConflict => Conflict(new ProblemDetails
+            {
+                Title = "Idempotency key was reused with different reward data.",
+                Detail = "The request ID has already been used with different reward data.",
+                Status = StatusCodes.Status409Conflict,
+            }),
+            _ => throw new InvalidOperationException(
+                $"관리자 보상 API에서 지원하지 않는 PlayerGrain 오류입니다: {result.Error}"),
+        };
+    }
+
+    /// <summary>Orleans 보상 영수증을 외부 API 응답 형식으로 복사합니다.</summary>
+    private static GrantRewardResponse ToResponse(PlayerRewardReceipt receipt, bool isReplay)
     {
         return new GrantRewardResponse(
             receipt.RewardAuditId,

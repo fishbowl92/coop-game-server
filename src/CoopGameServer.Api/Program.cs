@@ -7,7 +7,6 @@ using CoopGameServer.Api.Application.Rewards;
 using CoopGameServer.Api.Authentication;
 using CoopGameServer.Domain.Accounts;
 using CoopGameServer.Persistence;
-using CoopGameServer.Persistence.Rewards;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
@@ -63,10 +62,9 @@ builder.Services.AddScoped<IPasswordHasher<Account>, PasswordHasher<Account>>();
 builder.Services.AddSingleton<JwtTokenService>();
 builder.Services.AddScoped<AuthenticationService>();
 
-// Writer는 Factory와 TimeProvider만 보관하므로 Singleton으로 안전하게 재사용할 수 있습니다.
-builder.Services.AddSingleton(TimeProvider.System);
-builder.Services.AddSingleton<IRewardWriter, PostgreSqlRewardWriter>();
-// RewardService는 Controller가 PlayerGrain으로 전환될 때까지 HTTP DTO 변환만 담당합니다.
+// API는 PostgreSQL Writer를 직접 등록하지 않습니다. 모든 보상 변경은 Orleans PlayerGrain을 거치며,
+// 이 Client는 상태를 보관하지 않고 Player ID에 해당하는 Grain Proxy를 얻어 호출만 전달합니다.
+builder.Services.AddSingleton<IPlayerGrainClient, OrleansPlayerGrainClient>();
 builder.Services.AddScoped<RewardService>();
 
 // PartyService는 HTTP 요청과 PartyGrain 사이에서 서버 생성 partyId와

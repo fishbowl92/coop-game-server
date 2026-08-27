@@ -237,4 +237,5 @@ docker compose down
 - Redis는 컨테이너만 있으며 애플리케이션 코드에서 사용하지 않습니다.
 - 현재 공개 Queue는 `coop-dungeon-normal-v1` 하나입니다. 여러 Queue를 추가하기 전에는 Player 전역 매칭 예약이 필요합니다.
 - GameRoom은 최소 생명주기만 있으며 공격·스킬·웨이브·재접속·결과 보상은 아직 없습니다.
-- 다음 기능은 PlayerGrain과 기존 RewardService의 책임 경계를 확정한 뒤 GameRoom 전투·재접속·보상 확정을 구현하는 것입니다.
+- 관리자 보상 API는 PlayerGrain을 거쳐 PostgreSQL에 반영되지만, GameRoom 완료 결과는 아직 PlayerGrain 보상으로 연결되지 않았습니다.
+- 다음 기능은 게임 결과·보상 정책 버전·Player별 전달 상태를 저장하고 GameRoom 완료 보상을 PlayerGrain에 연결하는 것입니다.

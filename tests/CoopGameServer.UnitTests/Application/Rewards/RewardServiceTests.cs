@@ -1,24 +1,24 @@
 using CoopGameServer.Api.Application.Rewards;
 using CoopGameServer.Contracts.Rewards;
-using CoopGameServer.Persistence.Rewards;
+using CoopGameServer.GrainContracts.Players;
 
 namespace CoopGameServer.UnitTests.Application.Rewards;
 
 /// <summary>
-/// 기존 HTTP 보상 계약과 새 Persistence Writer 계약을 연결하는 임시 어댑터를 검증합니다.
+/// HTTP 보상 계약을 PlayerGrain 명령으로 변환하는 API 어댑터를 검증합니다.
 /// </summary>
 /// <remarks>
-/// 실제 트랜잭션과 동시성은 PostgreSQL 통합 테스트가 담당합니다. 여기서는 계층 사이의
-/// 입력 변환과 예상 업무 오류 매핑만 빠르게 검증합니다.
+/// 실제 Grain 실행·트랜잭션·동시성은 Orleans와 PostgreSQL 통합 테스트가 담당합니다.
+/// 여기서는 입력 변환, 결과 전달, HTTP 응답 대기 취소 경계만 빠르게 검증합니다.
 /// </remarks>
 public sealed class RewardServiceTests
 {
     [Fact]
-    public async Task GrantAsyncMapsHttpRequestToWriterCommandAndReturnsReceipt()
+    public async Task GrantAsyncMapsHttpRequestToPlayerGrainCommandAndReturnsResult()
     {
         var playerId = Guid.NewGuid();
         var requestId = Guid.NewGuid();
-        var receipt = new RewardWriteReceipt(
+        var receipt = new PlayerRewardReceipt(
             Guid.NewGuid(),
             requestId,
             playerId,
@@ -27,55 +27,59 @@ public sealed class RewardServiceTests
             2,
             "administrator-reward",
             DateTimeOffset.UtcNow);
-        var writer = new StubRewardWriter(
-            _ => Task.FromResult(RewardWriteResult.Applied(receipt)));
-        var service = new RewardService(writer);
+        var expectedResult = Applied(receipt);
+        var grainClient = new StubPlayerGrainClient(
+            (_, _) => Task.FromResult(expectedResult));
+        var service = new RewardService(grainClient);
         var request = new GrantRewardRequest(requestId, 500, 1001, 2, "administrator-reward");
 
         var result = await service.GrantAsync(playerId, request, CancellationToken.None);
 
-        Assert.NotNull(result);
-        Assert.Same(receipt, result.Receipt);
-        Assert.False(result.IsReplay);
-        Assert.Equal(requestId, writer.LastCommand?.RequestId);
-        Assert.Equal(playerId, writer.LastCommand?.PlayerId);
-        Assert.Equal(500, writer.LastCommand?.GoldAmount);
-        Assert.Equal(1001, writer.LastCommand?.ItemId);
-        Assert.Equal(2, writer.LastCommand?.ItemQuantity);
-        Assert.Equal("administrator-reward", writer.LastCommand?.Reason);
+        Assert.Same(expectedResult, result);
+        Assert.Equal(playerId, grainClient.LastPlayerId);
+        Assert.Equal(requestId, grainClient.LastCommand?.RequestId);
+        Assert.Equal(500, grainClient.LastCommand?.GoldAmount);
+        Assert.Equal(1001, grainClient.LastCommand?.ItemId);
+        Assert.Equal(2, grainClient.LastCommand?.ItemQuantity);
+        Assert.Equal("administrator-reward", grainClient.LastCommand?.Reason);
     }
 
     [Fact]
-    public async Task GrantAsyncMapsPlayerNotFoundToNull()
+    public async Task GrantAsyncConvertsMissingNullableValuesToExplicitInvalidCommandValues()
     {
-        var writer = new StubRewardWriter(
-            _ => Task.FromResult(RewardWriteResult.Failed(RewardWriteError.PlayerNotFound)));
-        var service = new RewardService(writer);
-        var request = new GrantRewardRequest(Guid.NewGuid(), 100, null, null, "missing-player");
+        var rejectedResult = Rejected(PlayerRewardCommandError.InvalidRequest);
+        var grainClient = new StubPlayerGrainClient(
+            (_, _) => Task.FromResult(rejectedResult));
+        var service = new RewardService(grainClient);
+        var request = new GrantRewardRequest(null, 0, null, null, null);
 
         var result = await service.GrantAsync(Guid.NewGuid(), request, CancellationToken.None);
 
-        Assert.Null(result);
+        Assert.Same(rejectedResult, result);
+        Assert.Equal(Guid.Empty, grainClient.LastCommand?.RequestId);
+        Assert.Equal(string.Empty, grainClient.LastCommand?.Reason);
     }
 
     [Fact]
-    public async Task GrantAsyncMapsIdempotencyConflictToExistingApiException()
+    public async Task GrantAsyncPreservesPlayerGrainBusinessError()
     {
-        var writer = new StubRewardWriter(
-            _ => Task.FromResult(RewardWriteResult.Failed(RewardWriteError.IdempotencyConflict)));
-        var service = new RewardService(writer);
+        var expectedResult = Rejected(PlayerRewardCommandError.IdempotencyConflict);
+        var grainClient = new StubPlayerGrainClient(
+            (_, _) => Task.FromResult(expectedResult));
+        var service = new RewardService(grainClient);
         var request = new GrantRewardRequest(Guid.NewGuid(), 100, null, null, "conflicting-request");
 
-        await Assert.ThrowsAsync<IdempotencyKeyConflictException>(
-            () => service.GrantAsync(Guid.NewGuid(), request, CancellationToken.None));
+        var result = await service.GrantAsync(Guid.NewGuid(), request, CancellationToken.None);
+
+        Assert.Same(expectedResult, result);
     }
 
     [Fact]
-    public async Task GrantAsyncDoesNotDetachWriterAfterCancellationOnceWriteHasStarted()
+    public async Task GrantAsyncCancelsOnlyHttpWaitAfterGrainCallHasStarted()
     {
         var playerId = Guid.NewGuid();
         var requestId = Guid.NewGuid();
-        var receipt = new RewardWriteReceipt(
+        var receipt = new PlayerRewardReceipt(
             Guid.NewGuid(),
             requestId,
             playerId,
@@ -84,33 +88,32 @@ public sealed class RewardServiceTests
             null,
             "complete-after-start",
             DateTimeOffset.UtcNow);
-        var pendingWrite = new TaskCompletionSource<RewardWriteResult>(
+        var pendingGrainCall = new TaskCompletionSource<PlayerRewardCommandResult>(
             TaskCreationOptions.RunContinuationsAsynchronously);
-        var writer = new StubRewardWriter(_ => pendingWrite.Task);
-        var service = new RewardService(writer);
+        var grainClient = new StubPlayerGrainClient((_, _) => pendingGrainCall.Task);
+        var service = new RewardService(grainClient);
         var request = new GrantRewardRequest(requestId, 100, null, null, "complete-after-start");
         using var cancellationSource = new CancellationTokenSource();
 
         var operation = service.GrantAsync(playerId, request, cancellationSource.Token);
 
-        // Writer 호출 뒤 HTTP 토큰이 취소돼도 작업을 분리하지 않고 Writer의 결론을 기다립니다.
-        Assert.NotNull(writer.LastCommand);
+        Assert.NotNull(grainClient.LastCommand);
         cancellationSource.Cancel();
-        Assert.False(operation.IsCompleted);
 
-        pendingWrite.SetResult(RewardWriteResult.Applied(receipt));
+        // API 대기는 취소되지만 CancellationToken이 없는 실제 Grain Task는 그대로 남아 있습니다.
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => operation);
+        Assert.False(pendingGrainCall.Task.IsCompleted);
 
-        var result = await operation;
-        Assert.NotNull(result);
-        Assert.Same(receipt, result.Receipt);
+        pendingGrainCall.SetResult(Applied(receipt));
+        Assert.Equal(PlayerRewardCommandStatus.Applied, (await pendingGrainCall.Task).Status);
     }
 
     [Fact]
-    public async Task GrantAsyncDoesNotStartWriterWhenRequestWasAlreadyCancelled()
+    public async Task GrantAsyncDoesNotStartGrainCallWhenRequestWasAlreadyCancelled()
     {
-        var writer = new StubRewardWriter(
-            _ => throw new InvalidOperationException("취소된 요청에서 Writer가 호출되면 안 됩니다."));
-        var service = new RewardService(writer);
+        var grainClient = new StubPlayerGrainClient(
+            (_, _) => throw new InvalidOperationException("취소된 요청에서 Grain이 호출되면 안 됩니다."));
+        var service = new RewardService(grainClient);
         var request = new GrantRewardRequest(Guid.NewGuid(), 100, null, null, "cancelled-before-start");
         using var cancellationSource = new CancellationTokenSource();
         cancellationSource.Cancel();
@@ -118,21 +121,47 @@ public sealed class RewardServiceTests
         await Assert.ThrowsAnyAsync<OperationCanceledException>(
             () => service.GrantAsync(Guid.NewGuid(), request, cancellationSource.Token));
 
-        Assert.Null(writer.LastCommand);
+        Assert.Equal(0, grainClient.CallCount);
     }
 
-    /// <summary>테스트가 지정한 결과를 반환하고 전달받은 명령을 기록하는 Writer 대역입니다.</summary>
-    private sealed class StubRewardWriter(
-        Func<RewardWriteCommand, Task<RewardWriteResult>> writeHandler) : IRewardWriter
+    private static PlayerRewardCommandResult Applied(PlayerRewardReceipt receipt)
     {
-        /// <summary>어댑터가 마지막으로 변환해 전달한 명령입니다.</summary>
-        public RewardWriteCommand? LastCommand { get; private set; }
+        return new PlayerRewardCommandResult(
+            IsReplay: false,
+            PlayerRewardCommandStatus.Applied,
+            PlayerRewardCommandError.None,
+            receipt);
+    }
+
+    private static PlayerRewardCommandResult Rejected(PlayerRewardCommandError error)
+    {
+        return new PlayerRewardCommandResult(
+            IsReplay: false,
+            PlayerRewardCommandStatus.Rejected,
+            error,
+            Receipt: null);
+    }
+
+    /// <summary>Grain 호출을 기록하고 테스트가 지정한 비동기 결과를 반환하는 대역입니다.</summary>
+    private sealed class StubPlayerGrainClient(
+        Func<Guid, GrantPlayerRewardCommand, Task<PlayerRewardCommandResult>> grantHandler)
+        : IPlayerGrainClient
+    {
+        public int CallCount { get; private set; }
+
+        public Guid? LastPlayerId { get; private set; }
+
+        public GrantPlayerRewardCommand? LastCommand { get; private set; }
 
         /// <inheritdoc />
-        public Task<RewardWriteResult> WriteAsync(RewardWriteCommand command)
+        public Task<PlayerRewardCommandResult> GrantAdminRewardAsync(
+            Guid playerId,
+            GrantPlayerRewardCommand command)
         {
+            CallCount++;
+            LastPlayerId = playerId;
             LastCommand = command;
-            return writeHandler(command);
+            return grantHandler(playerId, command);
         }
     }
 }

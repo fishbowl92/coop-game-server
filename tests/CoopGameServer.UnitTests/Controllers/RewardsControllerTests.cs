@@ -1,14 +1,14 @@
 using CoopGameServer.Api.Application.Rewards;
 using CoopGameServer.Api.Controllers;
 using CoopGameServer.Contracts.Rewards;
-using CoopGameServer.Persistence.Rewards;
+using CoopGameServer.GrainContracts.Players;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 
 namespace CoopGameServer.UnitTests.Controllers;
 
 /// <summary>
-/// 보상 영속성 구현을 교체해도 기존 HTTP 상태 코드와 응답 본문이 유지되는지 검증합니다.
+/// 보상 처리 경로를 PlayerGrain으로 바꿔도 기존 HTTP 상태 코드와 응답 본문이 유지되는지 검증합니다.
 /// </summary>
 public sealed class RewardsControllerTests
 {
@@ -16,7 +16,7 @@ public sealed class RewardsControllerTests
     public async Task GrantRewardReturnsCreatedAndPreservesReceiptForNewReward()
     {
         var receipt = CreateReceipt();
-        var controller = CreateController(RewardWriteResult.Applied(receipt));
+        var controller = CreateController(Applied(receipt, isReplay: false));
         var request = CreateRequest(receipt);
 
         var actionResult = await controller.GrantReward(
@@ -43,7 +43,7 @@ public sealed class RewardsControllerTests
     public async Task GrantRewardReturnsOkForIdempotentReplay()
     {
         var receipt = CreateReceipt();
-        var controller = CreateController(RewardWriteResult.Replayed(receipt));
+        var controller = CreateController(Applied(receipt, isReplay: true));
 
         var actionResult = await controller.GrantReward(
             receipt.PlayerId,
@@ -60,8 +60,7 @@ public sealed class RewardsControllerTests
     public async Task GrantRewardReturnsNotFoundWhenPlayerDoesNotExist()
     {
         var receipt = CreateReceipt();
-        var controller = CreateController(
-            RewardWriteResult.Failed(RewardWriteError.PlayerNotFound));
+        var controller = CreateController(Rejected(PlayerRewardCommandError.PlayerNotFound));
 
         var actionResult = await controller.GrantReward(
             receipt.PlayerId,
@@ -75,8 +74,7 @@ public sealed class RewardsControllerTests
     public async Task GrantRewardReturnsConflictWhenIdempotencyKeyHasDifferentPayload()
     {
         var receipt = CreateReceipt();
-        var controller = CreateController(
-            RewardWriteResult.Failed(RewardWriteError.IdempotencyConflict));
+        var controller = CreateController(Rejected(PlayerRewardCommandError.IdempotencyConflict));
 
         var actionResult = await controller.GrantReward(
             receipt.PlayerId,
@@ -89,12 +87,10 @@ public sealed class RewardsControllerTests
     }
 
     [Fact]
-    public async Task GrantRewardReturnsBadRequestWhenWriterRejectsInvalidReward()
+    public async Task GrantRewardReturnsBadRequestWhenPlayerGrainRejectsInvalidReward()
     {
         var receipt = CreateReceipt();
-        var writer = new StubRewardWriter(
-            _ => throw new ArgumentException("보상 입력이 유효하지 않습니다."));
-        var controller = new RewardsController(new RewardService(writer));
+        var controller = CreateController(Rejected(PlayerRewardCommandError.InvalidRequest));
 
         var actionResult = await controller.GrantReward(
             receipt.PlayerId,
@@ -106,9 +102,9 @@ public sealed class RewardsControllerTests
     }
 
     /// <summary>테스트마다 서로 충돌하지 않는 보상 영수증을 만듭니다.</summary>
-    private static RewardWriteReceipt CreateReceipt()
+    private static PlayerRewardReceipt CreateReceipt()
     {
-        return new RewardWriteReceipt(
+        return new PlayerRewardReceipt(
             Guid.NewGuid(),
             Guid.NewGuid(),
             Guid.NewGuid(),
@@ -120,7 +116,7 @@ public sealed class RewardsControllerTests
     }
 
     /// <summary>영수증과 같은 값을 가진 기존 HTTP 요청 형식을 만듭니다.</summary>
-    private static GrantRewardRequest CreateRequest(RewardWriteReceipt receipt)
+    private static GrantRewardRequest CreateRequest(PlayerRewardReceipt receipt)
     {
         return new GrantRewardRequest(
             receipt.RequestId,
@@ -130,21 +126,45 @@ public sealed class RewardsControllerTests
             receipt.Reason);
     }
 
-    /// <summary>지정한 Writer 결과를 반환하는 Controller를 만듭니다.</summary>
-    private static RewardsController CreateController(RewardWriteResult writeResult)
+    /// <summary>지정한 PlayerGrain 결과를 반환하는 Controller를 만듭니다.</summary>
+    private static RewardsController CreateController(PlayerRewardCommandResult grainResult)
     {
-        var writer = new StubRewardWriter(_ => Task.FromResult(writeResult));
-        return new RewardsController(new RewardService(writer));
+        var grainClient = new StubPlayerGrainClient(
+            (_, _) => Task.FromResult(grainResult));
+        return new RewardsController(new RewardService(grainClient));
     }
 
-    /// <summary>Controller가 받은 HTTP 결과만 검증할 수 있도록 DB 작업을 대신하는 테스트 대역입니다.</summary>
-    private sealed class StubRewardWriter(
-        Func<RewardWriteCommand, Task<RewardWriteResult>> writeHandler) : IRewardWriter
+    private static PlayerRewardCommandResult Applied(
+        PlayerRewardReceipt receipt,
+        bool isReplay)
+    {
+        return new PlayerRewardCommandResult(
+            isReplay,
+            PlayerRewardCommandStatus.Applied,
+            PlayerRewardCommandError.None,
+            receipt);
+    }
+
+    private static PlayerRewardCommandResult Rejected(PlayerRewardCommandError error)
+    {
+        return new PlayerRewardCommandResult(
+            IsReplay: false,
+            PlayerRewardCommandStatus.Rejected,
+            error,
+            Receipt: null);
+    }
+
+    /// <summary>Controller가 받은 Grain 결과만 검증하도록 Orleans 호출을 대신하는 테스트 대역입니다.</summary>
+    private sealed class StubPlayerGrainClient(
+        Func<Guid, GrantPlayerRewardCommand, Task<PlayerRewardCommandResult>> grantHandler)
+        : IPlayerGrainClient
     {
         /// <inheritdoc />
-        public Task<RewardWriteResult> WriteAsync(RewardWriteCommand command)
+        public Task<PlayerRewardCommandResult> GrantAdminRewardAsync(
+            Guid playerId,
+            GrantPlayerRewardCommand command)
         {
-            return writeHandler(command);
+            return grantHandler(playerId, command);
         }
     }
 }

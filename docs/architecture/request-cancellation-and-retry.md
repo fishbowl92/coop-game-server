@@ -44,7 +44,9 @@ HTTP(Hypertext Transfer Protocol, 웹 요청·응답 통신 규약) 클라이언
 2. 처음 요청이면 재화 변경과 감사 로그를 하나의 Transaction(트랜잭션, 여러 DB 변경을 모두 성공하거나 모두 실패하게 묶는 단위)으로 저장합니다.
 3. 같은 `requestId`가 재전송되면 보상을 다시 지급하지 않고 이전 결과를 반환합니다.
 
-이 구조는 `RewardService`와 PostgreSQL 통합 테스트에 구현되었습니다. 같은 `requestId` 100개 동시 요청은 보상을 정확히 한 번만 적용하고, 같은 키의 다른 본문은 충돌로 거부하며, 지갑 갱신 실패 시 감사 로그도 함께 Rollback됩니다.
+이 구조는 `PlayerGrain`과 `PostgreSqlRewardWriter`에 구현되었습니다. 같은 `requestId` 100개 동시 요청은 보상을 정확히 한 번만 적용하고, 같은 키의 다른 본문은 충돌로 거부하며, 지갑 갱신 실패 시 감사 로그도 함께 Rollback됩니다.
+
+API의 `RewardService`는 HTTP 요청을 Grain 명령으로 바꾸고 응답 대기에만 `CancellationToken`을 적용합니다. 이미 시작된 Grain 호출에는 취소 토큰을 전달하지 않으므로 클라이언트 연결이 끊겨도 Silo의 보상 처리는 결과를 끝까지 확정합니다.
 
 2026-08-13에는 서로 다른 `requestId` 100개가 같은 Player에게 동시에 들어오는 시나리오도 추가했습니다. Player 행을 `SELECT FOR UPDATE`로 잠가 서로 다른 정상 요청의 누적값이 유실되지 않도록 했습니다. 이는 멱등성과 별도의 동시성 제어입니다.
 
@@ -52,5 +54,5 @@ HTTP(Hypertext Transfer Protocol, 웹 요청·응답 통신 규약) 클라이언
 
 - 프로젝트 수준의 DB 명령 타임아웃 값과 재시도 정책은 아직 설정하지 않았습니다.
 - PostgreSQL 장애·지연 상황은 관측성·장애 대응 주차에서 의도적으로 실험합니다.
-- 취소 토큰 자체와 DB 명령 취소 시점은 아직 자동 검증하지 않습니다.
+- HTTP 응답 대기 취소와 Grain 작업 지속은 단위 테스트로 검증하지만, 실제 네트워크 단절·DB 장기 지연 실험은 아직 수행하지 않았습니다.
 - 트랜잭션·동일 requestId 중복·서로 다른 requestId 동시 요청은 PostgreSQL 통합 테스트로 검증합니다.
