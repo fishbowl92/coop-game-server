@@ -1,4 +1,6 @@
+using System.Globalization;
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using CoopGameServer.GrainContracts.GameRooms;
@@ -355,6 +357,13 @@ public sealed class GameRoomGrain(IDbContextFactory<GameDbContext> dbContextFact
                 (int)snapshot.Outcome);
         }
 
+        // 방 완료와 네 플레이어의 결과 전달 대기 행은 반드시 같은 Transaction으로 저장합니다.
+        // 방만 Completed가 되고 결과 행이 빠지면 이후 복구 서비스가 전달 대상을 찾을 수 없습니다.
+        if (snapshot is not null)
+        {
+            await SynchronizeGameResultsAsync(gameDbContext, snapshot);
+        }
+
         await gameDbContext.GameRoomRequests
             .Where(request => request.RoomId == roomId)
             .ExecuteDeleteAsync();
@@ -363,6 +372,88 @@ public sealed class GameRoomGrain(IDbContextFactory<GameDbContext> dbContextFact
         {
             gameDbContext.GameRoomRequests.Add(CreateRequestRecord(roomId, storedRequest));
         }
+    }
+
+    /// <summary>
+    /// 완료된 방에는 정확히 네 개의 Pending 결과가 존재하도록 만들고 기존 행의 불변 값을 검증합니다.
+    /// </summary>
+    private static async Task SynchronizeGameResultsAsync(
+        GameDbContext gameDbContext,
+        GameRoomSnapshot snapshot)
+    {
+        var existingResults = await gameDbContext.GameResults
+            .Where(result => result.RoomId == snapshot.RoomId)
+            .ToArrayAsync();
+
+        if (snapshot.Lifecycle is not GameRoomLifecycle.Completed)
+        {
+            if (existingResults.Length > 0)
+            {
+                throw new InvalidOperationException(
+                    $"완료되지 않은 게임 방 {snapshot.RoomId}에 결과 전달 행이 존재합니다.");
+            }
+
+            return;
+        }
+
+        var expectedPlayerIds = snapshot.PlayerIds.ToHashSet();
+        if (existingResults.Any(result => !expectedPlayerIds.Contains(result.PlayerId)))
+        {
+            throw new InvalidOperationException(
+                $"게임 방 {snapshot.RoomId}의 참가자가 아닌 결과 전달 행이 존재합니다.");
+        }
+
+        var updatedAt = snapshot.CompletedAt
+            ?? throw new InvalidOperationException("완료된 게임 방에 완료 시각이 없습니다.");
+
+        foreach (var playerId in snapshot.PlayerIds)
+        {
+            var rewardRequestId = CreateRewardRequestId(
+                snapshot.RoomId,
+                playerId,
+                snapshot.RewardPolicyVersion);
+            var existingResult = existingResults.SingleOrDefault(result => result.PlayerId == playerId);
+
+            if (existingResult is null)
+            {
+                gameDbContext.GameResults.Add(new GameResultRecord(
+                    snapshot.RoomId,
+                    playerId,
+                    snapshot.RewardPolicyVersion,
+                    rewardRequestId,
+                    updatedAt));
+                continue;
+            }
+
+            if (existingResult.RewardPolicyVersion != snapshot.RewardPolicyVersion
+                || existingResult.RewardRequestId != rewardRequestId)
+            {
+                // 이미 발급된 정책 버전이나 멱등성 키를 자동 수정하면 중복 보상 위험이 생깁니다.
+                throw new InvalidOperationException(
+                    $"게임 방 {snapshot.RoomId}, 플레이어 {playerId}의 보상 식별 정보가 방 상태와 다릅니다.");
+            }
+        }
+    }
+
+    /// <summary>
+    /// 방·플레이어·정책 버전이 같으면 언제나 같은 보상 requestId를 만드는 결정적 함수입니다.
+    /// </summary>
+    private static Guid CreateRewardRequestId(
+        Guid roomId,
+        Guid playerId,
+        int rewardPolicyVersion)
+    {
+        var source = string.Concat(
+            "game-room-reward-v1:",
+            roomId.ToString("D"),
+            ":",
+            playerId.ToString("D"),
+            ":",
+            rewardPolicyVersion.ToString(CultureInfo.InvariantCulture));
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(source));
+
+        // bigEndian=true를 사용해야 해시 앞 16바이트의 표시 순서가 PostgreSQL Backfill UUID와 같습니다.
+        return new Guid(hash.AsSpan(0, 16), bigEndian: true);
     }
 
     /// <summary>메모리의 최초 명령과 결과를 PostgreSQL JSON 행으로 변환합니다.</summary>

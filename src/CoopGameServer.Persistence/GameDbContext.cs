@@ -79,6 +79,9 @@ public sealed class GameDbContext : DbContext
     /// <summary>game_room_requests 테이블에 대응하는 게임 방 명령 처리 기록 집합입니다.</summary>
     public DbSet<GameRoomRequestRecord> GameRoomRequests => Set<GameRoomRequestRecord>();
 
+    /// <summary>game_results 테이블에 대응하는 플레이어별 결과 전달 상태 집합입니다.</summary>
+    public DbSet<GameResultRecord> GameResults => Set<GameResultRecord>();
+
     /// <summary>
     /// C# Player 객체와 PostgreSQL players 테이블 사이의 세부 규칙을 정의합니다.
     /// </summary>
@@ -591,5 +594,64 @@ public sealed class GameDbContext : DbContext
             .HasColumnType("timestamp with time zone")
             .IsRequired();
         // 생성 실패 결과도 보존해야 하므로 game_room_requests는 game_rooms와 외래 키로 묶지 않습니다.
+
+        var gameResult = modelBuilder.Entity<GameResultRecord>();
+
+        gameResult.ToTable(
+            "game_results",
+            table =>
+            {
+                table.HasCheckConstraint(
+                    "CK_game_results_reward_policy_version_positive",
+                    "reward_policy_version > 0");
+                table.HasCheckConstraint(
+                    "CK_game_results_delivery_status",
+                    "delivery_status IN (0, 1, 2, 3, 4)");
+                table.HasCheckConstraint(
+                    "CK_game_results_attempt_count_nonnegative",
+                    "attempt_count >= 0");
+            });
+        gameResult.HasKey(entity => new { entity.RoomId, entity.PlayerId });
+        gameResult.Property(entity => entity.RoomId)
+            .HasColumnName("room_id")
+            .ValueGeneratedNever();
+        gameResult.Property(entity => entity.PlayerId)
+            .HasColumnName("player_id")
+            .ValueGeneratedNever();
+        gameResult.Property(entity => entity.RewardPolicyVersion)
+            .HasColumnName("reward_policy_version")
+            .IsRequired();
+        gameResult.Property(entity => entity.RewardRequestId)
+            .HasColumnName("reward_request_id")
+            .ValueGeneratedNever();
+        gameResult.HasIndex(entity => entity.RewardRequestId)
+            .IsUnique()
+            .HasDatabaseName("IX_game_results_reward_request_id");
+        gameResult.Property(entity => entity.DeliveryStatus)
+            .HasColumnName("delivery_status")
+            .HasConversion<int>()
+            .IsRequired();
+        gameResult.Property(entity => entity.AttemptCount)
+            .HasColumnName("attempt_count")
+            .IsRequired();
+        gameResult.Property(entity => entity.NextAttemptAt)
+            .HasColumnName("next_attempt_at")
+            .HasColumnType("timestamp with time zone");
+        gameResult.Property(entity => entity.LastErrorCode)
+            .HasColumnName("last_error_code")
+            .HasMaxLength(GameResultRecord.MaxLastErrorCodeLength);
+        gameResult.Property(entity => entity.UpdatedAt)
+            .HasColumnName("updated_at")
+            .HasColumnType("timestamp with time zone")
+            .IsRequired();
+        gameResult.HasIndex(entity => new { entity.DeliveryStatus, entity.NextAttemptAt, entity.RoomId })
+            .HasDatabaseName("IX_game_results_delivery_status_next_attempt_at_room_id");
+        gameResult.HasOne<GameRoomRecord>()
+            .WithMany()
+            .HasForeignKey(entity => entity.RoomId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        // Player가 없거나 삭제된 비정상 상황도 TerminalFailure로 기록할 수 있어야 하므로
+        // player_id에는 외래 키를 두지 않습니다. PlayerGrain이 실제 전달 시 존재 여부를 판정합니다.
     }
 }

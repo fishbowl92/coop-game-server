@@ -2,6 +2,7 @@ using CoopGameServer.GrainContracts.GameRooms;
 using CoopGameServer.GrainContracts.Matchmaking;
 using CoopGameServer.GrainContracts.Parties;
 using CoopGameServer.IntegrationTests.Infrastructure;
+using CoopGameServer.Persistence.GameRooms;
 using Microsoft.EntityFrameworkCore;
 using Orleans.TestingHost;
 
@@ -198,10 +199,25 @@ public sealed class GameRoomGrainTests(OrleansTestClusterFixture fixture)
         var storedRequest = await gameDbContext.GameRoomRequests
             .SingleAsync(record => record.RoomId == assignment.RoomId
                 && record.RequestId == completeRequestId);
+        var storedGameResults = await gameDbContext.GameResults
+            .Where(result => result.RoomId == assignment.RoomId)
+            .OrderBy(result => result.PlayerId)
+            .ToArrayAsync();
 
         Assert.Equal((int)GameOutcome.Victory, storedRoom.Outcome);
         Assert.Equal(1, storedRoom.RewardPolicyVersion);
         Assert.Contains("Victory", storedRequest.RequestPayloadJson, StringComparison.Ordinal);
+        Assert.Equal(assignment.PlayerIds.Order(), storedGameResults.Select(result => result.PlayerId));
+        Assert.All(storedGameResults, result =>
+        {
+            Assert.Equal(1, result.RewardPolicyVersion);
+            Assert.Equal(GameResultDeliveryStatus.Pending, result.DeliveryStatus);
+            Assert.Equal(0, result.AttemptCount);
+            Assert.Null(result.NextAttemptAt);
+            Assert.Null(result.LastErrorCode);
+            Assert.NotEqual(Guid.Empty, result.RewardRequestId);
+        });
+        Assert.Equal(4, storedGameResults.Select(result => result.RewardRequestId).Distinct().Count());
 
         // Silo 재시작으로 메모리를 버린 뒤에도 Complete 요청 JSON을 복원해 같은 결과만 재생해야 합니다.
         await _fixture.RestartAllSilosAsync();
