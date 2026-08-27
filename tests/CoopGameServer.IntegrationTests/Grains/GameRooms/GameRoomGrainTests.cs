@@ -37,6 +37,8 @@ public sealed class GameRoomGrainTests(OrleansTestClusterFixture fixture)
         Assert.Equal(assignment.PlayerIds, snapshot.PlayerIds);
         Assert.Null(snapshot.StartedAt);
         Assert.Null(snapshot.CompletedAt);
+        Assert.Equal(GameOutcome.None, snapshot.Outcome);
+        Assert.Equal(1, snapshot.RewardPolicyVersion);
     }
 
     [Fact]
@@ -77,12 +79,14 @@ public sealed class GameRoomGrainTests(OrleansTestClusterFixture fixture)
         Assert.Equal(PartyLifecycle.InGame, inGameParty.Lifecycle);
         Assert.Equal(assignment.RoomId, inGameParty.CurrentRoomId);
 
-        var completeResult = await room.CompleteAsync(Guid.NewGuid());
+        var completeResult = await room.CompleteAsync(Guid.NewGuid(), GameOutcome.Victory);
 
         var completedRoom = Assert.IsType<GameRoomSnapshot>(completeResult.Room);
         var activeParty = Assert.IsType<PartySnapshot>(await party.GetAsync());
         Assert.Equal(GameRoomLifecycle.Completed, completedRoom.Lifecycle);
         Assert.NotNull(completedRoom.CompletedAt);
+        Assert.Equal(GameOutcome.Victory, completedRoom.Outcome);
+        Assert.Equal(1, completedRoom.RewardPolicyVersion);
         Assert.Equal(PartyLifecycle.Active, activeParty.Lifecycle);
         Assert.Null(activeParty.CurrentRoomId);
         Assert.Equal(playerIds[..3], activeParty.MemberPlayerIds);
@@ -96,10 +100,11 @@ public sealed class GameRoomGrainTests(OrleansTestClusterFixture fixture)
         await room.CreateAsync(Guid.NewGuid(), assignment);
 
         var startResult = await room.StartAsync(Guid.NewGuid());
-        var completeResult = await room.CompleteAsync(Guid.NewGuid());
+        var completeResult = await room.CompleteAsync(Guid.NewGuid(), GameOutcome.Defeat);
 
         Assert.Equal(GameRoomLifecycle.InGame, Assert.IsType<GameRoomSnapshot>(startResult.Room).Lifecycle);
         Assert.Equal(GameRoomLifecycle.Completed, Assert.IsType<GameRoomSnapshot>(completeResult.Room).Lifecycle);
+        Assert.Equal(GameOutcome.Defeat, Assert.IsType<GameRoomSnapshot>(completeResult.Room).Outcome);
         Assert.Empty(Assert.IsType<GameRoomSnapshot>(completeResult.Room).PartyIds);
     }
 
@@ -137,7 +142,7 @@ public sealed class GameRoomGrainTests(OrleansTestClusterFixture fixture)
         var restoredRoom = GetRoom(assignment.RoomId);
         var restoredSnapshot = Assert.IsType<GameRoomSnapshot>(await restoredRoom.GetAsync());
         var replayResult = await restoredRoom.StartAsync(startRequestId);
-        var conflictResult = await restoredRoom.CompleteAsync(startRequestId);
+        var conflictResult = await restoredRoom.CompleteAsync(startRequestId, GameOutcome.Cancelled);
 
         Assert.Equal(GameRoomLifecycle.InGame, restoredSnapshot.Lifecycle);
         Assert.True(replayResult.IsReplay);
@@ -166,6 +171,47 @@ public sealed class GameRoomGrainTests(OrleansTestClusterFixture fixture)
         Assert.Equal(GameRoomCommandError.None, firstResult.Error);
         Assert.Equal(GameRoomCommandError.None, secondResult.Error);
         Assert.NotEqual(firstResult.Room?.RoomId, secondResult.Room?.RoomId);
+    }
+
+    [Fact]
+    public async Task CompletePersistsOutcomeAndRejectsChangedOutcomeForSameRequestId()
+    {
+        var assignment = CreateAssignment();
+        var room = GetRoom(assignment.RoomId);
+        var completeRequestId = Guid.NewGuid();
+        await room.CreateAsync(Guid.NewGuid(), assignment);
+        await room.StartAsync(Guid.NewGuid());
+
+        var firstResult = await room.CompleteAsync(completeRequestId, GameOutcome.Victory);
+        var replayResult = await room.CompleteAsync(completeRequestId, GameOutcome.Victory);
+        var conflictResult = await room.CompleteAsync(completeRequestId, GameOutcome.Defeat);
+
+        var completedRoom = Assert.IsType<GameRoomSnapshot>(firstResult.Room);
+        Assert.Equal(GameOutcome.Victory, completedRoom.Outcome);
+        Assert.Equal(1, completedRoom.RewardPolicyVersion);
+        Assert.True(replayResult.IsReplay);
+        Assert.Equal(GameRoomCommandError.RequestIdConflict, conflictResult.Error);
+
+        await using var gameDbContext = _fixture.CreateDbContext();
+        var storedRoom = await gameDbContext.GameRooms
+            .SingleAsync(record => record.RoomId == assignment.RoomId);
+        var storedRequest = await gameDbContext.GameRoomRequests
+            .SingleAsync(record => record.RoomId == assignment.RoomId
+                && record.RequestId == completeRequestId);
+
+        Assert.Equal((int)GameOutcome.Victory, storedRoom.Outcome);
+        Assert.Equal(1, storedRoom.RewardPolicyVersion);
+        Assert.Contains("Victory", storedRequest.RequestPayloadJson, StringComparison.Ordinal);
+
+        // Silo 재시작으로 메모리를 버린 뒤에도 Complete 요청 JSON을 복원해 같은 결과만 재생해야 합니다.
+        await _fixture.RestartAllSilosAsync();
+        var restoredRoom = GetRoom(assignment.RoomId);
+        var restoredReplay = await restoredRoom.CompleteAsync(completeRequestId, GameOutcome.Victory);
+        var restoredConflict = await restoredRoom.CompleteAsync(completeRequestId, GameOutcome.Defeat);
+
+        Assert.True(restoredReplay.IsReplay);
+        Assert.Equal(GameOutcome.Victory, restoredReplay.Room?.Outcome);
+        Assert.Equal(GameRoomCommandError.RequestIdConflict, restoredConflict.Error);
     }
 
     /// <summary>주어진 Guid 키의 GameRoomGrain 참조를 테스트 Client에서 얻습니다.</summary>

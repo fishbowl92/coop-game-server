@@ -504,6 +504,10 @@ public sealed class GameDbContext : DbContext
             table =>
             {
                 table.HasCheckConstraint("CK_game_rooms_lifecycle", "lifecycle IN (0, 1, 2)");
+                table.HasCheckConstraint("CK_game_rooms_outcome", "outcome IN (0, 1, 2, 3)");
+                table.HasCheckConstraint(
+                    "CK_game_rooms_reward_policy_version_positive",
+                    "reward_policy_version > 0");
                 table.HasCheckConstraint("CK_game_rooms_four_players", "cardinality(player_ids) = 4");
                 table.HasCheckConstraint("CK_game_rooms_party_count", "cardinality(party_ids) <= 4");
                 table.HasCheckConstraint(
@@ -511,6 +515,10 @@ public sealed class GameDbContext : DbContext
                     "(lifecycle = 0 AND started_at IS NULL AND completed_at IS NULL) OR "
                     + "(lifecycle = 1 AND started_at IS NOT NULL AND completed_at IS NULL) OR "
                     + "(lifecycle = 2 AND started_at IS NOT NULL AND completed_at IS NOT NULL)");
+                table.HasCheckConstraint(
+                    "CK_game_rooms_lifecycle_outcome",
+                    "(lifecycle IN (0, 1) AND outcome = 0) OR "
+                    + "(lifecycle = 2 AND outcome IN (1, 2, 3))");
             });
         room.HasKey(entity => entity.RoomId);
         room.Property(entity => entity.RoomId)
@@ -541,6 +549,12 @@ public sealed class GameDbContext : DbContext
         room.Property(entity => entity.CompletedAt)
             .HasColumnName("completed_at")
             .HasColumnType("timestamp with time zone");
+        room.Property(entity => entity.Outcome)
+            .HasColumnName("outcome")
+            .IsRequired();
+        room.Property(entity => entity.RewardPolicyVersion)
+            .HasColumnName("reward_policy_version")
+            .IsRequired();
         room.HasIndex(entity => new { entity.QueueKey, entity.Lifecycle, entity.CreatedAt })
             .HasDatabaseName("IX_game_rooms_queue_key_lifecycle_created_at");
 
@@ -550,8 +564,8 @@ public sealed class GameDbContext : DbContext
             "game_room_requests",
             table => table.HasCheckConstraint(
                 "CK_game_room_requests_payload_shape",
-                "(command_kind = 'Create' AND request_payload_json IS NOT NULL) OR "
-                + "(command_kind IN ('Start', 'Complete') AND request_payload_json IS NULL)"));
+                "(command_kind IN ('Create', 'Complete') AND request_payload_json IS NOT NULL) OR "
+                + "(command_kind = 'Start' AND request_payload_json IS NULL)"));
         // GameRoom 명령의 멱등성 범위는 roomId입니다.
         // 따라서 같은 requestId라도 대상 방이 다르면 별개의 명령으로 저장합니다.
         request.HasKey(entity => new { entity.RoomId, entity.RequestId });

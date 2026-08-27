@@ -5,6 +5,7 @@ using CoopGameServer.Api.Controllers;
 using CoopGameServer.Contracts.GameRooms;
 using CoopGameServer.Contracts.Matchmaking;
 using CoopGameServer.Domain.Accounts;
+using CoopGameServer.GrainContracts.GameRooms;
 using CoopGameServer.GrainContracts.Matchmaking;
 using CoopGameServer.GrainContracts.Parties;
 using CoopGameServer.IntegrationTests.Infrastructure;
@@ -83,7 +84,9 @@ public sealed class MatchmakingFlowControllerTests(OrleansTestClusterFixture fix
         Assert.Equal(PartyLifecycle.InGame, inGameParty.Lifecycle);
         Assert.Equal(match.RoomId, inGameParty.CurrentRoomId);
 
-        var completeRequest = new GameRoomCommandRequest(Guid.NewGuid());
+        var completeRequest = new CompleteGameRoomRequest(
+            Guid.NewGuid(),
+            GameOutcome.Victory.ToString());
         var completeAction = await adminController.Complete(
             match.RoomId,
             completeRequest,
@@ -93,6 +96,8 @@ public sealed class MatchmakingFlowControllerTests(OrleansTestClusterFixture fix
             await fixture.Cluster.GrainFactory.GetGrain<IPartyGrain>(partyId).GetAsync());
 
         Assert.Equal("Completed", completedRoom.Lifecycle);
+        Assert.Equal("Victory", completedRoom.Outcome);
+        Assert.Equal(1, completedRoom.RewardPolicyVersion);
         Assert.Equal(PartyLifecycle.Active, returnedParty.Lifecycle);
         Assert.Null(returnedParty.CurrentRoomId);
         Assert.Equal(partyPlayers, returnedParty.MemberPlayerIds);

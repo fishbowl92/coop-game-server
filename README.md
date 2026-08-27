@@ -2,7 +2,7 @@
 
 > Microsoft Orleans 기반 협동 게임 서비스 백엔드를 단계적으로 구현하는 C#·.NET 10 프로젝트입니다.
 
-현재는 Player 프로필·인증, 재화·인벤토리 보상, PartyGrain, MatchQueueGrain, GameRoomGrain과 PostgreSQL 영속성을 구현했습니다. 사전 구성 파티와 솔로를 정확히 4명으로 매칭하고, 게임 방 완료 뒤 파티를 유지한 채 로비로 복귀시키며, 완료된 티켓을 해제해 같은 참가자가 다음 게임에 다시 매칭될 수 있습니다. Redis 애플리케이션 연동·실제 전투·재접속·운영 배포는 아직 구현하지 않았습니다.
+현재는 Player 프로필·인증, 재화·인벤토리 보상, PartyGrain, MatchQueueGrain, GameRoomGrain과 PostgreSQL 영속성을 구현했습니다. 사전 구성 파티와 솔로를 정확히 4명으로 매칭하고, 게임 방의 최종 결과와 보상 정책 버전을 저장한 뒤 파티를 유지한 채 로비로 복귀시키며, 완료된 티켓을 해제해 같은 참가자가 다음 게임에 다시 매칭될 수 있습니다. Redis 애플리케이션 연동·실제 전투·재접속·운영 배포는 아직 구현하지 않았습니다.
 
 ## 현재 구현 범위
 
@@ -17,7 +17,7 @@
 - 별도 Orleans Silo와 진단용 Ping Grain 호출
 - PartyGrain의 생성·조회·가입·탈퇴·해산·리더 승계·멱등성·PostgreSQL 영속성
 - MatchQueueGrain의 솔로·사전 구성 파티 등록, 취소, 정확히 4명 조합과 재시작 복원
-- GameRoomGrain의 Ready → InGame → Completed 생명주기와 게임 종료 후 파티 복귀
+- GameRoomGrain의 Ready → InGame → Completed 생명주기, Victory·Defeat·Cancelled 결과와 고정된 보상 정책 버전 저장
 - 게임 완료 후 Matched 티켓을 Completed로 해제하고 같은 참가자의 다음 매칭 허용
 - 외부 API에서 `coop-dungeon-normal-v1` 단일 Queue만 허용하는 서버 정의 정책
 - 일반 Player의 본인 데이터·파티 조작 인가와 관리자 전용 보상·진단 API 제한
@@ -236,6 +236,6 @@ docker compose down
 - JWT 접근 토큰은 구현했지만 갱신 토큰, 로그아웃·폐기 목록, 관리자 계정 초기화 절차는 아직 없습니다.
 - Redis는 컨테이너만 있으며 애플리케이션 코드에서 사용하지 않습니다.
 - 현재 공개 Queue는 `coop-dungeon-normal-v1` 하나입니다. 여러 Queue를 추가하기 전에는 Player 전역 매칭 예약이 필요합니다.
-- GameRoom은 최소 생명주기만 있으며 공격·스킬·웨이브·재접속·결과 보상은 아직 없습니다.
-- 관리자 보상 API는 PlayerGrain을 거쳐 PostgreSQL에 반영되지만, GameRoom 완료 결과는 아직 PlayerGrain 보상으로 연결되지 않았습니다.
-- 다음 기능은 게임 결과·보상 정책 버전·Player별 전달 상태를 저장하고 GameRoom 완료 보상을 PlayerGrain에 연결하는 것입니다.
+- GameRoom은 최소 생명주기와 최종 결과만 있으며 공격·스킬·웨이브·재접속은 아직 없습니다.
+- GameRoom 완료 결과와 생성 시점의 보상 정책 버전은 저장하지만, Player별 전달 상태와 실제 결과 보상은 아직 PlayerGrain에 연결되지 않았습니다.
+- 다음 기능은 Player별 게임 결과·전달 상태를 만들고 GameRoom 완료 보상을 PlayerGrain에 연결하는 것입니다.

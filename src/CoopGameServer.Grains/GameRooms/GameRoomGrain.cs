@@ -102,11 +102,11 @@ public sealed class GameRoomGrain(IDbContextFactory<GameDbContext> dbContextFact
     }
 
     /// <inheritdoc />
-    public async Task<GameRoomCommandResult> CompleteAsync(Guid requestId)
+    public async Task<GameRoomCommandResult> CompleteAsync(Guid requestId, GameOutcome outcome)
     {
         var currentRoom = _state.Get();
         var candidateState = _state.Clone();
-        var result = candidateState.Complete(requestId, DateTimeOffset.UtcNow);
+        var result = candidateState.Complete(requestId, outcome, DateTimeOffset.UtcNow);
 
         if (requestId == Guid.Empty)
         {
@@ -340,7 +340,9 @@ public sealed class GameRoomGrain(IDbContextFactory<GameDbContext> dbContextFact
                 snapshot.PlayerIds,
                 snapshot.CreatedAt,
                 snapshot.StartedAt,
-                snapshot.CompletedAt));
+                snapshot.CompletedAt,
+                (int)snapshot.Outcome,
+                snapshot.RewardPolicyVersion));
         }
         else
         {
@@ -349,7 +351,8 @@ public sealed class GameRoomGrain(IDbContextFactory<GameDbContext> dbContextFact
                 snapshot.PartyIds,
                 snapshot.PlayerIds,
                 snapshot.StartedAt,
-                snapshot.CompletedAt);
+                snapshot.CompletedAt,
+                (int)snapshot.Outcome);
         }
 
         await gameDbContext.GameRoomRequests
@@ -373,7 +376,12 @@ public sealed class GameRoomGrain(IDbContextFactory<GameDbContext> dbContextFact
                 storedRequest.CreateAssignment
                 ?? throw new InvalidOperationException("게임 방 생성 요청 기록이 없습니다."),
                 JsonOptions),
-            GameRoomCommandKind.Start or GameRoomCommandKind.Complete => null,
+            GameRoomCommandKind.Start => null,
+            GameRoomCommandKind.Complete => JsonSerializer.Serialize(
+                new CompleteGameRoomPayload(
+                    storedRequest.CompleteOutcome
+                    ?? throw new InvalidOperationException("게임 방 완료 결과 기록이 없습니다.")),
+                JsonOptions),
             _ => throw new InvalidOperationException("알 수 없는 게임 방 명령 종류입니다."),
         };
 
@@ -402,11 +410,19 @@ public sealed class GameRoomGrain(IDbContextFactory<GameDbContext> dbContextFact
                 ?? throw new InvalidOperationException("저장된 게임 방 생성 요청 본문이 없습니다."),
                 JsonOptions)
             : null;
+        GameOutcome? completeOutcome = commandKind == GameRoomCommandKind.Complete
+            ? JsonSerializer.Deserialize<CompleteGameRoomPayload>(
+                record.RequestPayloadJson
+                ?? throw new InvalidOperationException("저장된 게임 방 완료 요청 본문이 없습니다."),
+                JsonOptions)?.Outcome
+                ?? throw new InvalidOperationException("저장된 게임 방 완료 결과를 복원할 수 없습니다.")
+            : null;
 
         return new GameRoomStoredRequest(
             record.RequestId,
             commandKind,
             assignment,
+            completeOutcome,
             result,
             record.CreatedAt);
     }
@@ -422,6 +438,11 @@ public sealed class GameRoomGrain(IDbContextFactory<GameDbContext> dbContextFact
             record.PlayerIds.ToArray(),
             record.CreatedAt,
             record.StartedAt,
-            record.CompletedAt);
+            record.CompletedAt,
+            (GameOutcome)record.Outcome,
+            record.RewardPolicyVersion);
     }
+
+    /// <summary>Complete 명령의 멱등성 비교를 위해 JSON에 저장하는 최소 요청 원문입니다.</summary>
+    private sealed record CompleteGameRoomPayload(GameOutcome Outcome);
 }

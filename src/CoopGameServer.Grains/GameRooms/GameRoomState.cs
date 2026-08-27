@@ -17,6 +17,12 @@ internal sealed class GameRoomState
     /// <summary>GameDbContext의 queue_key 최대 길이와 같은 제한입니다.</summary>
     internal const int MaxQueueKeyLength = 100;
 
+    /// <summary>
+    /// 현재 서버가 새 게임 방에 고정하는 보상 정책 버전입니다.
+    /// 방 생성 뒤에는 값을 바꾸지 않아야 같은 경기 결과를 언제 처리해도 같은 정책을 선택할 수 있습니다.
+    /// </summary>
+    internal const int CurrentRewardPolicyVersion = 1;
+
     private readonly Dictionary<Guid, GameRoomStoredRequest> _requests = [];
     private GameRoomSnapshot? _room;
 
@@ -32,7 +38,7 @@ internal sealed class GameRoomState
 
         foreach (var request in requests)
         {
-            state._requests.Add(request.RequestId, request.Copy());
+            state._requests.Add(request.RequestId, NormalizeRestoredRequest(request, state._room));
         }
 
         return state;
@@ -97,7 +103,9 @@ internal sealed class GameRoomState
             assignment.PlayerIds.ToArray(),
             assignment.CreatedAt,
             StartedAt: null,
-            CompletedAt: null);
+            CompletedAt: null,
+            Outcome: GameOutcome.None,
+            RewardPolicyVersion: CurrentRewardPolicyVersion);
 
         return StoreCreate(requestId, assignment, Success());
     }
@@ -148,7 +156,10 @@ internal sealed class GameRoomState
     }
 
     /// <summary>InGame 방을 Completed 최종 상태로 바꿉니다.</summary>
-    internal GameRoomCommandResult Complete(Guid requestId, DateTimeOffset completedAt)
+    internal GameRoomCommandResult Complete(
+        Guid requestId,
+        GameOutcome outcome,
+        DateTimeOffset completedAt)
     {
         var requestError = ValidateRequestId(requestId);
         if (requestError is not GameRoomCommandError.None)
@@ -158,14 +169,19 @@ internal sealed class GameRoomState
 
         if (_requests.TryGetValue(requestId, out var storedRequest))
         {
-            return storedRequest.CommandKind == GameRoomCommandKind.Complete
+            return storedRequest.Matches(outcome)
                 ? Replay(storedRequest.Result)
                 : Failure(GameRoomCommandError.RequestIdConflict);
         }
 
+        if (!IsFinalOutcome(outcome))
+        {
+            return StoreComplete(requestId, outcome, Failure(GameRoomCommandError.InvalidOutcome));
+        }
+
         if (_room is null)
         {
-            return StoreSimple(requestId, GameRoomCommandKind.Complete, Failure(GameRoomCommandError.RoomNotCreated));
+            return StoreComplete(requestId, outcome, Failure(GameRoomCommandError.RoomNotCreated));
         }
 
         var lifecycleError = _room.Lifecycle switch
@@ -178,7 +194,7 @@ internal sealed class GameRoomState
 
         if (lifecycleError is not GameRoomCommandError.None)
         {
-            return StoreSimple(requestId, GameRoomCommandKind.Complete, Failure(lifecycleError));
+            return StoreComplete(requestId, outcome, Failure(lifecycleError));
         }
 
         _room = _room with
@@ -187,9 +203,10 @@ internal sealed class GameRoomState
             PartyIds = _room.PartyIds.ToArray(),
             PlayerIds = _room.PlayerIds.ToArray(),
             CompletedAt = completedAt,
+            Outcome = outcome,
         };
 
-        return StoreSimple(requestId, GameRoomCommandKind.Complete, Success());
+        return StoreComplete(requestId, outcome, Success());
     }
 
     /// <summary>
@@ -211,6 +228,12 @@ internal sealed class GameRoomState
         return requestId == Guid.Empty
             ? GameRoomCommandError.InvalidRequestId
             : GameRoomCommandError.None;
+    }
+
+    /// <summary>완료 명령에 사용할 수 있는 확정 결과인지 검사합니다.</summary>
+    private static bool IsFinalOutcome(GameOutcome outcome)
+    {
+        return outcome is GameOutcome.Victory or GameOutcome.Defeat or GameOutcome.Cancelled;
     }
 
     private static GameRoomCommandError ValidateAssignment(Guid roomId, MatchAssignment assignment)
@@ -261,6 +284,64 @@ internal sealed class GameRoomState
     {
         _requests[requestId] = GameRoomStoredRequest.ForSimple(requestId, commandKind, CloneResult(result));
         return result;
+    }
+
+    /// <summary>완료 결과까지 요청 원문에 포함해 같은 requestId의 내용 변경을 검출합니다.</summary>
+    private GameRoomCommandResult StoreComplete(
+        Guid requestId,
+        GameOutcome outcome,
+        GameRoomCommandResult result)
+    {
+        _requests[requestId] = GameRoomStoredRequest.ForComplete(
+            requestId,
+            outcome,
+            CloneResult(result));
+        return result;
+    }
+
+    /// <summary>
+    /// 새 필드가 없던 이전 DB 기록을 복원할 때 정책 버전과 완료 결과를 안전한 값으로 보정합니다.
+    /// 이전 완료 방은 실제 승패를 알 수 없으므로 승리나 패배를 추측하지 않고 Cancelled로 분류합니다.
+    /// </summary>
+    private static GameRoomStoredRequest NormalizeRestoredRequest(
+        GameRoomStoredRequest request,
+        GameRoomSnapshot? currentRoom)
+    {
+        var copy = request.Copy();
+        if (copy.Result.Room is not { } resultRoom)
+        {
+            return copy;
+        }
+
+        var rewardPolicyVersion = resultRoom.RewardPolicyVersion > 0
+            ? resultRoom.RewardPolicyVersion
+            : currentRoom?.RewardPolicyVersion > 0
+                ? currentRoom.RewardPolicyVersion
+                : CurrentRewardPolicyVersion;
+        var outcome = resultRoom.Lifecycle == GameRoomLifecycle.Completed
+            ? resultRoom.Outcome is GameOutcome.None
+                ? currentRoom?.Outcome is > GameOutcome.None
+                    ? currentRoom.Outcome
+                    : GameOutcome.Cancelled
+                : resultRoom.Outcome
+            : GameOutcome.None;
+
+        return copy with
+        {
+            CompleteOutcome = copy.CommandKind == GameRoomCommandKind.Complete
+                ? copy.CompleteOutcome is GameOutcome.None or null
+                    ? outcome
+                    : copy.CompleteOutcome
+                : null,
+            Result = copy.Result with
+            {
+                Room = resultRoom with
+                {
+                    Outcome = outcome,
+                    RewardPolicyVersion = rewardPolicyVersion,
+                },
+            },
+        };
     }
 
     private GameRoomCommandResult Success()
@@ -332,6 +413,7 @@ internal sealed record GameRoomStoredRequest(
     Guid RequestId,
     GameRoomCommandKind CommandKind,
     MatchAssignment? CreateAssignment,
+    GameOutcome? CompleteOutcome,
     GameRoomCommandResult Result,
     DateTimeOffset CreatedAt)
 {
@@ -344,6 +426,7 @@ internal sealed record GameRoomStoredRequest(
             requestId,
             GameRoomCommandKind.Create,
             CloneAssignment(assignment),
+            CompleteOutcome: null,
             result,
             DateTimeOffset.UtcNow);
     }
@@ -357,6 +440,22 @@ internal sealed record GameRoomStoredRequest(
             requestId,
             commandKind,
             CreateAssignment: null,
+            CompleteOutcome: null,
+            result,
+            DateTimeOffset.UtcNow);
+    }
+
+    /// <summary>결과를 포함한 완료 명령의 최초 요청과 응답을 저장합니다.</summary>
+    internal static GameRoomStoredRequest ForComplete(
+        Guid requestId,
+        GameOutcome outcome,
+        GameRoomCommandResult result)
+    {
+        return new GameRoomStoredRequest(
+            requestId,
+            GameRoomCommandKind.Complete,
+            CreateAssignment: null,
+            CompleteOutcome: outcome,
             result,
             DateTimeOffset.UtcNow);
     }
@@ -370,6 +469,13 @@ internal sealed record GameRoomStoredRequest(
             && storedAssignment.PartyIds.SequenceEqual(assignment.PartyIds ?? [])
             && storedAssignment.PlayerIds.SequenceEqual(assignment.PlayerIds ?? [])
             && storedAssignment.CreatedAt == assignment.CreatedAt;
+    }
+
+    /// <summary>완료 요청이 최초 요청과 같은 결과를 가졌는지 검사합니다.</summary>
+    internal bool Matches(GameOutcome outcome)
+    {
+        return CommandKind == GameRoomCommandKind.Complete
+            && CompleteOutcome == outcome;
     }
 
     internal GameRoomStoredRequest Copy()

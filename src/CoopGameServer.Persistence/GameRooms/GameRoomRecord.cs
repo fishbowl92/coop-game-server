@@ -17,7 +17,9 @@ public sealed class GameRoomRecord
         Guid[] playerIds,
         DateTimeOffset createdAt,
         DateTimeOffset? startedAt,
-        DateTimeOffset? completedAt)
+        DateTimeOffset? completedAt,
+        int outcome,
+        int rewardPolicyVersion)
     {
         RoomId = roomId;
         QueueKey = queueKey;
@@ -27,6 +29,8 @@ public sealed class GameRoomRecord
         CreatedAt = createdAt;
         StartedAt = startedAt;
         CompletedAt = completedAt;
+        Outcome = outcome;
+        RewardPolicyVersion = rewardPolicyVersion;
     }
 
     /// <summary>방을 고유하게 식별하고 GameRoomGrain 기본 키로도 사용하는 값입니다.</summary>
@@ -53,18 +57,29 @@ public sealed class GameRoomRecord
     /// <summary>게임 완료 UTC 시각이며 완료 전에는 null입니다.</summary>
     public DateTimeOffset? CompletedAt { get; private set; }
 
+    /// <summary>None·Victory·Defeat·Cancelled를 정수로 저장한 최종 경기 결과입니다.</summary>
+    public int Outcome { get; private set; }
+
+    /// <summary>이 방의 보상 계산에 사용하도록 생성 시점에 고정한 정책 버전입니다.</summary>
+    public int RewardPolicyVersion { get; private set; }
+
     /// <summary>후보 GameRoomState의 최신 스냅샷으로 영속 행을 갱신합니다.</summary>
     public void Update(
         int lifecycle,
         Guid[] partyIds,
         Guid[] playerIds,
         DateTimeOffset? startedAt,
-        DateTimeOffset? completedAt)
+        DateTimeOffset? completedAt,
+        int outcome)
     {
         Lifecycle = lifecycle;
         PartyIds = partyIds.ToArray();
         PlayerIds = playerIds.ToArray();
         StartedAt = startedAt;
         CompletedAt = completedAt;
+        Outcome = outcome;
+
+        // RewardPolicyVersion은 방 생성 시점의 계약이므로 Update에서 변경하지 않습니다.
+        // 서버의 최신 정책 번호가 바뀌어도 이미 진행된 방은 생성 당시 정책을 계속 사용해야 합니다.
     }
 }

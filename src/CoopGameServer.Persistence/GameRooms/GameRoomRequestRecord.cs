@@ -35,7 +35,7 @@ public sealed class GameRoomRequestRecord
     /// <summary>Create·Start·Complete 중 하나의 명령 이름입니다.</summary>
     public string CommandKind { get; private set; } = string.Empty;
 
-    /// <summary>Create 명령의 MatchAssignment JSON이며, 매개변수가 없는 명령은 null입니다.</summary>
+    /// <summary>Create의 배정 정보 또는 Complete의 결과를 담은 JSON이며, Start 명령만 null입니다.</summary>
     public string? RequestPayloadJson { get; private set; }
 
     /// <summary>최초 GameRoomCommandResult를 직렬화한 JSON입니다.</summary>

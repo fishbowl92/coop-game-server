@@ -28,11 +28,25 @@ public sealed class GameRoomService(IGrainFactory grainFactory)
     public Task<GameRoomCommandResult> CompleteAsync(
         Guid roomId,
         Guid requestId,
+        string outcome,
         CancellationToken cancellationToken)
     {
-        return roomId == Guid.Empty
-            ? Task.FromResult(Failure(GameRoomCommandError.InvalidRoomId))
-            : GetRoom(roomId).CompleteAsync(requestId).WaitAsync(cancellationToken);
+        if (roomId == Guid.Empty)
+        {
+            return Task.FromResult(Failure(GameRoomCommandError.InvalidRoomId));
+        }
+
+        // HTTP에서는 사람이 읽기 쉬운 문자열을 받고, Orleans 계약 경계에서는 고정된 enum으로 바꿉니다.
+        // 해석할 수 없는 값은 None으로 바꿔 Grain의 단일 상태 규칙에서 InvalidOutcome으로 판정합니다.
+        // 이렇게 해야 잘못된 최초 요청도 Grain의 멱등성 기록에 남아 같은 requestId 재사용을 막을 수 있습니다.
+        var parsedOutcome = Enum.TryParse<GameOutcome>(outcome, ignoreCase: true, out var candidateOutcome)
+            && Enum.IsDefined(candidateOutcome)
+            ? candidateOutcome
+            : GameOutcome.None;
+
+        return GetRoom(roomId)
+            .CompleteAsync(requestId, parsedOutcome)
+            .WaitAsync(cancellationToken);
     }
 
     private IGameRoomGrain GetRoom(Guid roomId)

@@ -66,10 +66,14 @@ public sealed class GameRoomsController(GameRoomService gameRoomService) : Contr
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
     public async Task<ActionResult<GameRoomResponse>> Complete(
         Guid roomId,
-        [FromBody] GameRoomCommandRequest request,
+        [FromBody] CompleteGameRoomRequest request,
         CancellationToken cancellationToken)
     {
-        var result = await gameRoomService.CompleteAsync(roomId, request.RequestId, cancellationToken);
+        var result = await gameRoomService.CompleteAsync(
+            roomId,
+            request.RequestId,
+            request.Outcome,
+            cancellationToken);
         return ToActionResult(result);
     }
 
@@ -87,6 +91,7 @@ public sealed class GameRoomsController(GameRoomService gameRoomService) : Contr
         {
             GameRoomCommandError.InvalidRequestId
                 or GameRoomCommandError.InvalidRoomId
+                or GameRoomCommandError.InvalidOutcome
                 => (StatusCodes.Status400BadRequest, "Invalid game room request."),
             GameRoomCommandError.RoomNotCreated
                 => (StatusCodes.Status404NotFound, "Game room was not found."),
@@ -114,6 +119,8 @@ public sealed class GameRoomsController(GameRoomService gameRoomService) : Contr
             room.CreatedAt,
             room.StartedAt,
             room.CompletedAt,
+            room.Outcome.ToString(),
+            room.RewardPolicyVersion,
             isReplay);
     }
 }

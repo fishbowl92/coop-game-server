@@ -10,4 +10,6 @@ public sealed record GameRoomResponse(
     DateTimeOffset CreatedAt,
     DateTimeOffset? StartedAt,
     DateTimeOffset? CompletedAt,
+    string Outcome,
+    int RewardPolicyVersion,
     bool IsReplay);

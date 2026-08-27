@@ -44,4 +44,7 @@ public enum GameRoomCommandError
 
     /// <summary>PartyGrain의 실제 멤버가 MatchAssignment의 4인 참가자에 포함되지 않습니다.</summary>
     PartyRosterMismatch = 13,
+
+    /// <summary>완료 결과가 Victory·Defeat·Cancelled 중 하나가 아닙니다.</summary>
+    InvalidOutcome = 14,
 }

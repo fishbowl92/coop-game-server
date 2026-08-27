@@ -9,6 +9,8 @@ namespace CoopGameServer.GrainContracts.GameRooms;
 /// <param name="CreatedAt">매칭이 성립해 방이 생성된 UTC 시각입니다.</param>
 /// <param name="StartedAt">게임이 시작된 UTC 시각이며, 시작 전에는 null입니다.</param>
 /// <param name="CompletedAt">게임이 완료된 UTC 시각이며, 완료 전에는 null입니다.</param>
+/// <param name="Outcome">완료된 경기의 승리·패배·취소 결과이며, 완료 전에는 None입니다.</param>
+/// <param name="RewardPolicyVersion">이 방의 보상을 계산할 때 사용할 정책 버전입니다.</param>
 [GenerateSerializer]
 public sealed record GameRoomSnapshot(
     [property: Id(0)] Guid RoomId,
@@ -18,4 +20,6 @@ public sealed record GameRoomSnapshot(
     [property: Id(4)] Guid[] PlayerIds,
     [property: Id(5)] DateTimeOffset CreatedAt,
     [property: Id(6)] DateTimeOffset? StartedAt,
-    [property: Id(7)] DateTimeOffset? CompletedAt);
+    [property: Id(7)] DateTimeOffset? CompletedAt,
+    [property: Id(8)] GameOutcome Outcome,
+    [property: Id(9)] int RewardPolicyVersion);

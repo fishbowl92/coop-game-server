@@ -23,7 +23,8 @@ public interface IGameRoomGrain : IGrainWithGuidKey
     /// <param name="requestId">같은 시작 요청의 재전송을 식별하는 고유 번호입니다.</param>
     Task<GameRoomCommandResult> StartAsync(Guid requestId);
 
-    /// <summary>게임을 완료하고 사전 구성 파티를 멤버 그대로 Active 로비 상태로 되돌립니다.</summary>
+    /// <summary>최종 결과를 확정해 게임을 완료하고 사전 구성 파티를 멤버 그대로 Active 로비 상태로 되돌립니다.</summary>
     /// <param name="requestId">같은 완료 요청의 재전송을 식별하는 고유 번호입니다.</param>
-    Task<GameRoomCommandResult> CompleteAsync(Guid requestId);
+    /// <param name="outcome">서버가 확정한 승리·패배·취소 중 하나의 경기 결과입니다.</param>
+    Task<GameRoomCommandResult> CompleteAsync(Guid requestId, GameOutcome outcome);
 }
