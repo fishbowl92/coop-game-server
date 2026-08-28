@@ -60,4 +60,109 @@ public sealed class GameResultRecord
 
     /// <summary>이 결과 행의 상태를 마지막으로 변경한 UTC 시각입니다.</summary>
     public DateTimeOffset UpdatedAt { get; private set; }
+
+    /// <summary>실제 보상이 적용됐거나 기존 적용 결과를 재확인한 상태로 확정합니다.</summary>
+    /// <param name="updatedAt">PlayerGrain 응답을 저장하는 UTC 서버 시각입니다.</param>
+    public void MarkApplied(DateTimeOffset updatedAt)
+    {
+        CompleteAttempt(GameResultDeliveryStatus.Applied, updatedAt);
+    }
+
+    /// <summary>정책상 지급할 보상이 없는 정상 상태로 확정합니다.</summary>
+    /// <param name="updatedAt">PlayerGrain 응답을 저장하는 UTC 서버 시각입니다.</param>
+    public void MarkNoReward(DateTimeOffset updatedAt)
+    {
+        CompleteAttempt(GameResultDeliveryStatus.NoReward, updatedAt);
+    }
+
+    /// <summary>자동 재시도로 해결할 수 없는 업무 오류를 기록하고 전달을 종료합니다.</summary>
+    /// <param name="errorCode">PlayerGrain이 반환한 구조화된 업무 오류 이름입니다.</param>
+    /// <param name="updatedAt">오류를 저장하는 UTC 서버 시각입니다.</param>
+    public void MarkTerminalFailure(string errorCode, DateTimeOffset updatedAt)
+    {
+        EnsureDeliveryCanBeAttempted();
+        var normalizedErrorCode = NormalizeErrorCode(errorCode);
+
+        DeliveryStatus = GameResultDeliveryStatus.TerminalFailure;
+        AttemptCount = checked(AttemptCount + 1);
+        NextAttemptAt = null;
+        LastErrorCode = normalizedErrorCode;
+        UpdatedAt = updatedAt;
+    }
+
+    /// <summary>일시적인 기반시설 장애를 기록하고 다음 자동 재시도 시각을 예약합니다.</summary>
+    /// <param name="errorCode">예외 형식처럼 운영자가 원인을 분류할 수 있는 짧은 코드입니다.</param>
+    /// <param name="nextAttemptAt">이 시각 이후에만 다시 전달할 수 있습니다.</param>
+    /// <param name="updatedAt">현재 실패를 저장하는 UTC 서버 시각입니다.</param>
+    public void ScheduleRetry(
+        string errorCode,
+        DateTimeOffset nextAttemptAt,
+        DateTimeOffset updatedAt)
+    {
+        EnsureDeliveryCanBeAttempted();
+
+        if (nextAttemptAt <= updatedAt)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(nextAttemptAt),
+                nextAttemptAt,
+                "다음 재시도 시각은 현재 상태 변경 시각보다 뒤여야 합니다.");
+        }
+
+        var normalizedErrorCode = NormalizeErrorCode(errorCode);
+
+        DeliveryStatus = GameResultDeliveryStatus.PendingRetry;
+        AttemptCount = checked(AttemptCount + 1);
+        NextAttemptAt = nextAttemptAt;
+        LastErrorCode = normalizedErrorCode;
+        UpdatedAt = updatedAt;
+    }
+
+    /// <summary>성공 또는 정상 무보상 상태에 공통으로 필요한 값을 변경합니다.</summary>
+    private void CompleteAttempt(GameResultDeliveryStatus completedStatus, DateTimeOffset updatedAt)
+    {
+        EnsureDeliveryCanBeAttempted();
+
+        if (completedStatus is not GameResultDeliveryStatus.Applied and
+            not GameResultDeliveryStatus.NoReward)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(completedStatus),
+                completedStatus,
+                "완료 상태는 Applied 또는 NoReward여야 합니다.");
+        }
+
+        DeliveryStatus = completedStatus;
+        AttemptCount = checked(AttemptCount + 1);
+        NextAttemptAt = null;
+        LastErrorCode = null;
+        UpdatedAt = updatedAt;
+    }
+
+    /// <summary>최종 상태를 실수로 다시 변경하여 완료 결과를 훼손하지 못하게 막습니다.</summary>
+    private void EnsureDeliveryCanBeAttempted()
+    {
+        if (DeliveryStatus is not GameResultDeliveryStatus.Pending and
+            not GameResultDeliveryStatus.PendingRetry)
+        {
+            throw new InvalidOperationException(
+                $"최종 전달 상태 {DeliveryStatus}에서는 새로운 전달 결과를 기록할 수 없습니다.");
+        }
+    }
+
+    /// <summary>DB 열 길이 안에서 공백이 아닌 구조화된 오류 코드만 허용합니다.</summary>
+    private static string NormalizeErrorCode(string errorCode)
+    {
+        var normalizedErrorCode = errorCode?.Trim();
+
+        if (string.IsNullOrEmpty(normalizedErrorCode) ||
+            normalizedErrorCode.Length > MaxLastErrorCodeLength)
+        {
+            throw new ArgumentException(
+                $"오류 코드는 1자 이상 {MaxLastErrorCodeLength}자 이하여야 합니다.",
+                nameof(errorCode));
+        }
+
+        return normalizedErrorCode;
+    }
 }

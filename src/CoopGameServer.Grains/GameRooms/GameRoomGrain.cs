@@ -1,3 +1,4 @@
+using System.Data.Common;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
@@ -6,6 +7,7 @@ using System.Text.Json.Serialization;
 using CoopGameServer.GrainContracts.GameRooms;
 using CoopGameServer.GrainContracts.Matchmaking;
 using CoopGameServer.GrainContracts.Parties;
+using CoopGameServer.GrainContracts.Players;
 using CoopGameServer.Persistence;
 using CoopGameServer.Persistence.GameRooms;
 using Microsoft.EntityFrameworkCore;
@@ -20,9 +22,14 @@ namespace CoopGameServer.Grains.GameRooms;
 /// PartyGrain은 별도 Grain·별도 트랜잭션이므로 분산 트랜잭션을 사용하지 않고,
 /// 결정적인 하위 requestId와 현재 상태 확인으로 중간 실패 뒤 재시도 시 같은 결과로 수렴시킵니다.
 /// </remarks>
-public sealed class GameRoomGrain(IDbContextFactory<GameDbContext> dbContextFactory)
+public sealed class GameRoomGrain(
+    IDbContextFactory<GameDbContext> dbContextFactory,
+    TimeProvider timeProvider)
     : Grain, IGameRoomGrain
 {
+    private const int InitialRetryDelaySeconds = 5;
+    private const int MaximumRetryDelaySeconds = 60;
+
     // 사람이 DB JSON을 읽을 때 숫자보다 Ready·Start 같은 이름이 보이도록 열거형을 문자열로 저장합니다.
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -80,7 +87,7 @@ public sealed class GameRoomGrain(IDbContextFactory<GameDbContext> dbContextFact
     {
         var currentRoom = _state.Get();
         var candidateState = _state.Clone();
-        var result = candidateState.Start(requestId, DateTimeOffset.UtcNow);
+        var result = candidateState.Start(requestId, timeProvider.GetUtcNow());
 
         if (requestId == Guid.Empty || result.IsReplay)
         {
@@ -108,7 +115,7 @@ public sealed class GameRoomGrain(IDbContextFactory<GameDbContext> dbContextFact
     {
         var currentRoom = _state.Get();
         var candidateState = _state.Clone();
-        var result = candidateState.Complete(requestId, outcome, DateTimeOffset.UtcNow);
+        var result = candidateState.Complete(requestId, outcome, timeProvider.GetUtcNow());
 
         if (requestId == Guid.Empty)
         {
@@ -124,6 +131,7 @@ public sealed class GameRoomGrain(IDbContextFactory<GameDbContext> dbContextFact
                 await EnsureMatchTicketsCompletedAsync(
                     currentRoom ?? throw new InvalidOperationException("완료된 게임 방 상태가 없습니다."),
                     requestId);
+                await FinalizeCompletedRoomAsync();
             }
 
             return result;
@@ -149,9 +157,201 @@ public sealed class GameRoomGrain(IDbContextFactory<GameDbContext> dbContextFact
             await EnsureMatchTicketsCompletedAsync(
                 candidateState.Get() ?? throw new InvalidOperationException("완료된 게임 방 상태가 없습니다."),
                 requestId);
+            await FinalizeCompletedRoomAsync();
         }
 
         return result;
+    }
+
+    /// <inheritdoc />
+    public async Task FinalizeCompletedRoomAsync()
+    {
+        var room = _state.Get();
+        if (room is null || room.Lifecycle is not GameRoomLifecycle.Completed)
+        {
+            return;
+        }
+
+        var now = timeProvider.GetUtcNow();
+        await using var readContext = await dbContextFactory.CreateDbContextAsync();
+        var pendingResults = await readContext.GameResults
+            .AsNoTracking()
+            .Where(result => result.RoomId == room.RoomId
+                && (result.DeliveryStatus == GameResultDeliveryStatus.Pending
+                    || (result.DeliveryStatus == GameResultDeliveryStatus.PendingRetry
+                        && (result.NextAttemptAt == null || result.NextAttemptAt <= now))))
+            .OrderBy(result => result.PlayerId)
+            .ToArrayAsync();
+
+        foreach (var pendingResult in pendingResults)
+        {
+            if (!room.PlayerIds.Contains(pendingResult.PlayerId))
+            {
+                await PersistTerminalFailureAsync(
+                    pendingResult,
+                    "PlayerNotInRoom",
+                    timeProvider.GetUtcNow());
+                continue;
+            }
+
+            if (pendingResult.RewardPolicyVersion != room.RewardPolicyVersion)
+            {
+                await PersistTerminalFailureAsync(
+                    pendingResult,
+                    "RewardPolicyVersionMismatch",
+                    timeProvider.GetUtcNow());
+                continue;
+            }
+
+            PlayerRewardCommandResult playerResult;
+            try
+            {
+                var player = GrainFactory.GetGrain<IPlayerGrain>(pendingResult.PlayerId);
+                playerResult = await player.CompleteGameAsync(
+                    new CompletePlayerGameCommand(
+                        pendingResult.RewardRequestId,
+                        room.RoomId,
+                        room.QueueKey,
+                        room.Outcome,
+                        pendingResult.RewardPolicyVersion));
+            }
+            catch (Exception exception) when (IsTransientDeliveryException(exception))
+            {
+                var failedAt = timeProvider.GetUtcNow();
+                var retryDelay = CalculateRetryDelay(pendingResult.AttemptCount + 1);
+                await PersistRetryAsync(
+                    pendingResult,
+                    exception.GetType().Name,
+                    failedAt + retryDelay,
+                    failedAt);
+                continue;
+            }
+
+            await PersistPlayerResultAsync(
+                pendingResult,
+                playerResult,
+                timeProvider.GetUtcNow());
+        }
+    }
+
+    /// <summary>PlayerGrain의 정상·업무 거부 결과를 해당 Player의 전달 행 하나에 저장합니다.</summary>
+    private async Task PersistPlayerResultAsync(
+        GameResultRecord pendingResult,
+        PlayerRewardCommandResult playerResult,
+        DateTimeOffset updatedAt)
+    {
+        ValidatePlayerResult(pendingResult, playerResult);
+
+        await UpdateGameResultAsync(
+            pendingResult.RoomId,
+            pendingResult.PlayerId,
+            trackedResult =>
+            {
+                switch (playerResult.Status)
+                {
+                    case PlayerRewardCommandStatus.Applied:
+                        trackedResult.MarkApplied(updatedAt);
+                        break;
+                    case PlayerRewardCommandStatus.NoReward:
+                        trackedResult.MarkNoReward(updatedAt);
+                        break;
+                    case PlayerRewardCommandStatus.Rejected:
+                        trackedResult.MarkTerminalFailure(playerResult.Error.ToString(), updatedAt);
+                        break;
+                    default:
+                        throw new InvalidOperationException(
+                            $"지원하지 않는 Player 결과 상태입니다: {playerResult.Status}");
+                }
+            });
+    }
+
+    /// <summary>계약·데이터 오류를 자동 재시도하지 않는 최종 실패로 저장합니다.</summary>
+    private Task PersistTerminalFailureAsync(
+        GameResultRecord pendingResult,
+        string errorCode,
+        DateTimeOffset updatedAt)
+    {
+        return UpdateGameResultAsync(
+            pendingResult.RoomId,
+            pendingResult.PlayerId,
+            trackedResult => trackedResult.MarkTerminalFailure(errorCode, updatedAt));
+    }
+
+    /// <summary>일시 장애와 계산된 다음 시도 시각을 저장합니다.</summary>
+    private Task PersistRetryAsync(
+        GameResultRecord pendingResult,
+        string errorCode,
+        DateTimeOffset nextAttemptAt,
+        DateTimeOffset updatedAt)
+    {
+        return UpdateGameResultAsync(
+            pendingResult.RoomId,
+            pendingResult.PlayerId,
+            trackedResult => trackedResult.ScheduleRetry(errorCode, nextAttemptAt, updatedAt));
+    }
+
+    /// <summary>한 Player의 결과 행만 새 DbContext에서 읽고 변경하여 부분 성공을 즉시 보존합니다.</summary>
+    private async Task UpdateGameResultAsync(
+        Guid roomId,
+        Guid playerId,
+        Action<GameResultRecord> update)
+    {
+        await using var updateContext = await dbContextFactory.CreateDbContextAsync();
+        var trackedResult = await updateContext.GameResults.SingleAsync(
+            result => result.RoomId == roomId && result.PlayerId == playerId);
+
+        update(trackedResult);
+        await updateContext.SaveChangesAsync();
+    }
+
+    /// <summary>PlayerGrain 응답이 상태별 불변 조건과 요청 식별자를 지키는지 확인합니다.</summary>
+    private static void ValidatePlayerResult(
+        GameResultRecord pendingResult,
+        PlayerRewardCommandResult playerResult)
+    {
+        var isValid = playerResult.Status switch
+        {
+            PlayerRewardCommandStatus.Applied =>
+                playerResult.Error is PlayerRewardCommandError.None
+                && playerResult.Receipt is not null
+                && playerResult.Receipt.RequestId == pendingResult.RewardRequestId
+                && playerResult.Receipt.PlayerId == pendingResult.PlayerId,
+            PlayerRewardCommandStatus.NoReward =>
+                playerResult.Error is PlayerRewardCommandError.None
+                && playerResult.Receipt is null,
+            PlayerRewardCommandStatus.Rejected =>
+                playerResult.Error is not PlayerRewardCommandError.None
+                && Enum.IsDefined(playerResult.Error)
+                && playerResult.Receipt is null,
+            _ => false,
+        };
+
+        if (!isValid)
+        {
+            throw new InvalidOperationException(
+                $"Player {pendingResult.PlayerId}의 게임 결과 전달 응답이 계약 불변 조건을 위반했습니다.");
+        }
+    }
+
+    /// <summary>자동 재시도로 복구할 가능성이 있는 DB·시간 제한·Orleans 통신 예외만 분류합니다.</summary>
+    private static bool IsTransientDeliveryException(Exception exception)
+    {
+        return exception is TimeoutException
+            or DbException
+            or SiloUnavailableException
+            or OrleansMessageRejectionException
+            or GatewayTooBusyException;
+    }
+
+    /// <summary>첫 5초에서 시작해 10·20·40초로 늘고 최대 60초를 넘지 않는 Backoff를 계산합니다.</summary>
+    private static TimeSpan CalculateRetryDelay(int attemptNumber)
+    {
+        var safeAttemptNumber = Math.Max(attemptNumber, 1);
+        var shift = Math.Min(safeAttemptNumber - 1, 4);
+        var seconds = Math.Min(
+            InitialRetryDelaySeconds * (1 << shift),
+            MaximumRetryDelaySeconds);
+        return TimeSpan.FromSeconds(seconds);
     }
 
     /// <summary>

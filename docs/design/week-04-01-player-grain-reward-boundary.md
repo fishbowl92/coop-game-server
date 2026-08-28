@@ -3,7 +3,7 @@
 - 문서 상태: 승인 및 부분 구현됨(Approved / Partially Implemented)
 - 최초 작성일: 2026-08-21
 - 대상 주차: 4주차 — 게임 룸·전투 결과·재접속
-- 구현 상태: PlayerGrain·PostgreSQL Writer·게임 결과 보상 정책·Pending 기록 구현, GameRoom 자동 전달·복구 대기
+- 구현 상태: PlayerGrain·PostgreSQL Writer·게임 결과 보상 정책·Pending 기록·GameRoom 자동 전달 구현, Silo 복구 서비스 대기
 - 상위 문서: [4주차 전체 설계 — 게임 룸·전투·재접속](week-04-game-room-reconnect-overview.md)
 - 관련 결정: [ADR 0001 — Orleans 사용](../adr/0001-use-orleans-for-game-entity-coordination.md), [ADR 0003 — 멱등성 키](../adr/0003-use-idempotency-keys-for-state-changing-requests.md)
 
@@ -499,6 +499,8 @@ Task FinalizeCompletedRoomAsync();
 ```
 
 이 메서드는 HTTP API로 공개하지 않는다. Silo 내부 복구 서비스와 같은 완료 요청의 재생 경로만 호출한다. 메서드는 Party 복귀, Ticket 완료, Player별 `Pending`·`PendingRetry` 결과를 DB에서 다시 읽고 끝나지 않은 단계만 조정하므로 Worker가 과거 상태를 매개변수로 전달하지 않는다. 보상 재시도는 이 메서드 내부 단계이며 별도의 공개 `RetryPendingRewardsAsync` 계약을 만들지 않는다.
+
+현재 구현은 완료 직후와 같은 완료 요청 재생 시 `FinalizeCompletedRoomAsync`를 호출하여 Player별 보상을 전달한다. Player 응답은 한 행씩 즉시 저장하므로 일부 Player만 성공해도 성공 상태가 보존된다. 다음 단계에서는 같은 메서드를 호출하는 Silo 복구 서비스를 추가해 재시작 뒤 남은 `Pending`·기한이 지난 `PendingRetry`도 자동 처리한다.
 
 Recovery Service(복구 서비스)는 보상을 직접 지급하지 않는다. DB에서 Room ID를 찾아 Grain을 깨우는 역할만 담당하며, 실제 상태 확인과 PlayerGrain 호출은 항상 GameRoomGrain이 수행한다. 이 Worker는 재접속 기한 복구 설계에서도 공통으로 사용하고, 조회 조건만 만료 기한과 보상 재시도 시각으로 나눈다. 이렇게 하면 Silo 재시작 뒤에도 Worker가 Pending 행을 다시 찾아 처리를 이어갈 수 있다.
 

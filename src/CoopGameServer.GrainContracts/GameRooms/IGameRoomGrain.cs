@@ -27,4 +27,13 @@ public interface IGameRoomGrain : IGrainWithGuidKey
     /// <param name="requestId">같은 완료 요청의 재전송을 식별하는 고유 번호입니다.</param>
     /// <param name="outcome">서버가 확정한 승리·패배·취소 중 하나의 경기 결과입니다.</param>
     Task<GameRoomCommandResult> CompleteAsync(Guid requestId, GameOutcome outcome);
+
+    /// <summary>
+    /// 이미 완료된 방에서 아직 끝나지 않은 Player별 결과 전달만 다시 처리합니다.
+    /// </summary>
+    /// <remarks>
+    /// HTTP API로 공개하지 않으며, 같은 완료 요청의 재생 경로와 이후 Silo 복구 서비스가 호출합니다.
+    /// 완료된 Applied·NoReward·TerminalFailure 행은 다시 호출하지 않습니다.
+    /// </remarks>
+    Task FinalizeCompletedRoomAsync();
 }

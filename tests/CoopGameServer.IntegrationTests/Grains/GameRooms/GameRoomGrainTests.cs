@@ -67,6 +67,7 @@ public sealed class GameRoomGrainTests(OrleansTestClusterFixture fixture)
         var partyId = Guid.NewGuid();
         var playerIds = Enumerable.Range(0, 4).Select(_ => Guid.NewGuid()).ToArray();
         var party = await CreateQueuedPartyAsync(partyId, playerIds[..3]);
+        await _fixture.RegisterPlayersAsync(playerIds[3]);
         var assignment = CreateAssignment(partyIds: [partyId], playerIds: playerIds);
         var room = GetRoom(assignment.RoomId);
         await room.CreateAsync(Guid.NewGuid(), assignment);
@@ -98,6 +99,7 @@ public sealed class GameRoomGrainTests(OrleansTestClusterFixture fixture)
     {
         var assignment = CreateAssignment();
         var room = GetRoom(assignment.RoomId);
+        await _fixture.RegisterPlayersAsync(assignment.PlayerIds);
         await room.CreateAsync(Guid.NewGuid(), assignment);
 
         var startResult = await room.StartAsync(Guid.NewGuid());
@@ -107,6 +109,20 @@ public sealed class GameRoomGrainTests(OrleansTestClusterFixture fixture)
         Assert.Equal(GameRoomLifecycle.Completed, Assert.IsType<GameRoomSnapshot>(completeResult.Room).Lifecycle);
         Assert.Equal(GameOutcome.Defeat, Assert.IsType<GameRoomSnapshot>(completeResult.Room).Outcome);
         Assert.Empty(Assert.IsType<GameRoomSnapshot>(completeResult.Room).PartyIds);
+
+        await using var gameDbContext = _fixture.CreateDbContext();
+        var storedResults = await gameDbContext.GameResults
+            .Where(result => result.RoomId == assignment.RoomId)
+            .ToArrayAsync();
+        Assert.All(storedResults, result =>
+        {
+            Assert.Equal(GameResultDeliveryStatus.NoReward, result.DeliveryStatus);
+            Assert.Equal(1, result.AttemptCount);
+            Assert.Null(result.NextAttemptAt);
+            Assert.Null(result.LastErrorCode);
+        });
+        Assert.False(await gameDbContext.RewardAudits.AnyAsync(
+            audit => assignment.PlayerIds.Contains(audit.PlayerId)));
     }
 
     [Fact]
@@ -180,6 +196,7 @@ public sealed class GameRoomGrainTests(OrleansTestClusterFixture fixture)
         var assignment = CreateAssignment();
         var room = GetRoom(assignment.RoomId);
         var completeRequestId = Guid.NewGuid();
+        await _fixture.RegisterPlayersAsync(assignment.PlayerIds);
         await room.CreateAsync(Guid.NewGuid(), assignment);
         await room.StartAsync(Guid.NewGuid());
 
@@ -211,13 +228,17 @@ public sealed class GameRoomGrainTests(OrleansTestClusterFixture fixture)
         Assert.All(storedGameResults, result =>
         {
             Assert.Equal(1, result.RewardPolicyVersion);
-            Assert.Equal(GameResultDeliveryStatus.Pending, result.DeliveryStatus);
-            Assert.Equal(0, result.AttemptCount);
+            Assert.Equal(GameResultDeliveryStatus.Applied, result.DeliveryStatus);
+            Assert.Equal(1, result.AttemptCount);
             Assert.Null(result.NextAttemptAt);
             Assert.Null(result.LastErrorCode);
             Assert.NotEqual(Guid.Empty, result.RewardRequestId);
         });
         Assert.Equal(4, storedGameResults.Select(result => result.RewardRequestId).Distinct().Count());
+        Assert.Equal(
+            4,
+            await gameDbContext.RewardAudits.CountAsync(
+                audit => assignment.PlayerIds.Contains(audit.PlayerId)));
 
         // Silo 재시작으로 메모리를 버린 뒤에도 Complete 요청 JSON을 복원해 같은 결과만 재생해야 합니다.
         await _fixture.RestartAllSilosAsync();
@@ -228,6 +249,53 @@ public sealed class GameRoomGrainTests(OrleansTestClusterFixture fixture)
         Assert.True(restoredReplay.IsReplay);
         Assert.Equal(GameOutcome.Victory, restoredReplay.Room?.Outcome);
         Assert.Equal(GameRoomCommandError.RequestIdConflict, restoredConflict.Error);
+
+        await using var replayVerificationContext = _fixture.CreateDbContext();
+        Assert.Equal(
+            4,
+            await replayVerificationContext.RewardAudits.CountAsync(
+                audit => assignment.PlayerIds.Contains(audit.PlayerId)));
+        Assert.All(
+            await replayVerificationContext.GameResults
+                .Where(result => result.RoomId == assignment.RoomId)
+                .ToArrayAsync(),
+            result => Assert.Equal(1, result.AttemptCount));
+    }
+
+    [Fact]
+    public async Task CompleteKeepsSuccessfulPlayersAndMarksMissingPlayerAsTerminalFailure()
+    {
+        var assignment = CreateAssignment();
+        var registeredPlayerIds = assignment.PlayerIds[..3];
+        var missingPlayerId = assignment.PlayerIds[3];
+        await _fixture.RegisterPlayersAsync(registeredPlayerIds);
+        var room = GetRoom(assignment.RoomId);
+        await room.CreateAsync(Guid.NewGuid(), assignment);
+        await room.StartAsync(Guid.NewGuid());
+
+        var result = await room.CompleteAsync(Guid.NewGuid(), GameOutcome.Victory);
+
+        Assert.Equal(GameRoomCommandError.None, result.Error);
+
+        await using var gameDbContext = _fixture.CreateDbContext();
+        var storedResults = await gameDbContext.GameResults
+            .Where(gameResult => gameResult.RoomId == assignment.RoomId)
+            .ToArrayAsync();
+        Assert.All(
+            storedResults.Where(gameResult => registeredPlayerIds.Contains(gameResult.PlayerId)),
+            gameResult => Assert.Equal(GameResultDeliveryStatus.Applied, gameResult.DeliveryStatus));
+
+        var missingPlayerResult = Assert.Single(
+            storedResults,
+            gameResult => gameResult.PlayerId == missingPlayerId);
+        Assert.Equal(GameResultDeliveryStatus.TerminalFailure, missingPlayerResult.DeliveryStatus);
+        Assert.Equal(1, missingPlayerResult.AttemptCount);
+        Assert.Equal("PlayerNotFound", missingPlayerResult.LastErrorCode);
+        Assert.Null(missingPlayerResult.NextAttemptAt);
+        Assert.Equal(
+            3,
+            await gameDbContext.RewardAudits.CountAsync(
+                audit => registeredPlayerIds.Contains(audit.PlayerId)));
     }
 
     /// <summary>주어진 Guid 키의 GameRoomGrain 참조를 테스트 Client에서 얻습니다.</summary>
@@ -265,11 +333,12 @@ public sealed class GameRoomGrainTests(OrleansTestClusterFixture fixture)
     /// <summary>기본적으로 파티가 없는 고유한 4인 매칭 결과를 만듭니다.</summary>
     private static MatchAssignment CreateAssignment(
         Guid[]? partyIds = null,
-        Guid[]? playerIds = null)
+        Guid[]? playerIds = null,
+        string queueKey = "coop-dungeon-normal-v1")
     {
         return new MatchAssignment(
             Guid.NewGuid(),
-            $"room-test-{Guid.NewGuid():N}",
+            queueKey,
             partyIds ?? [],
             playerIds ?? Enumerable.Range(0, 4).Select(_ => Guid.NewGuid()).ToArray(),
             DateTimeOffset.UtcNow);
