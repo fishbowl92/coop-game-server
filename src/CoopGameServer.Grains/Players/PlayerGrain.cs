@@ -71,17 +71,52 @@ public sealed class PlayerGrain : Grain, IPlayerGrain
     }
 
     /// <inheritdoc />
-    public Task<PlayerRewardCommandResult> CompleteGameAsync(
+    public async Task<PlayerRewardCommandResult> CompleteGameAsync(
         CompletePlayerGameCommand command)
     {
-        if (!IsValidCompleteGameCommand(this.GetPrimaryKey(), command))
+        var playerId = this.GetPrimaryKey();
+
+        if (!IsValidCompleteGameCommand(playerId, command))
         {
-            return Task.FromResult(Rejected(PlayerRewardCommandError.InvalidRequest));
+            return Rejected(PlayerRewardCommandError.InvalidRequest);
         }
 
-        // 게임 결과별 보상 수치와 정책 버전은 아직 확정되지 않았습니다.
-        // 임의의 보상을 지급하거나 예외로 감추지 않고, 현재 지원 정책 집합이 비어 있음을 명시합니다.
-        return Task.FromResult(Rejected(PlayerRewardCommandError.UnsupportedRewardPolicy));
+        if (!GameCompletionRewardPolicy.TryEvaluate(command, out var reward))
+        {
+            return Rejected(PlayerRewardCommandError.UnsupportedRewardPolicy);
+        }
+
+        if (reward is null)
+        {
+            // 패배·취소에는 지급할 값이 없으므로 RewardWriter와 reward_audits를 사용하지 않습니다.
+            // 다만 삭제되거나 잘못 지정된 Player까지 정상 무보상으로 처리하지 않도록 존재 여부는 확인합니다.
+            await using var gameDbContext = await _gameDbContextFactory.CreateDbContextAsync();
+            var playerExists = await gameDbContext.Players
+                .AsNoTracking()
+                .AnyAsync(player => player.Id == playerId);
+
+            return playerExists
+                ? NoReward()
+                : Rejected(PlayerRewardCommandError.PlayerNotFound);
+        }
+
+        var writeCommand = new RewardWriteCommand(
+            command.RequestId,
+            playerId,
+            reward.GoldAmount,
+            reward.ItemId,
+            reward.ItemQuantity,
+            reward.Reason);
+        var writeResult = await _rewardWriter.WriteAsync(writeCommand);
+
+        return writeResult.Error switch
+        {
+            RewardWriteError.None => Applied(writeCommand, writeResult),
+            RewardWriteError.PlayerNotFound => Rejected(PlayerRewardCommandError.PlayerNotFound),
+            RewardWriteError.IdempotencyConflict => Rejected(PlayerRewardCommandError.IdempotencyConflict),
+            _ => throw new InvalidOperationException(
+                $"지원하지 않는 보상 쓰기 오류입니다: {writeResult.Error}"),
+        };
     }
 
     /// <inheritdoc />
@@ -268,6 +303,16 @@ public sealed class PlayerGrain : Grain, IPlayerGrain
             IsReplay: false,
             PlayerRewardCommandStatus.Rejected,
             error,
+            Receipt: null);
+    }
+
+    /// <summary>정책상 지급할 보상이 없지만 명령 처리는 정상 완료됐음을 나타냅니다.</summary>
+    private static PlayerRewardCommandResult NoReward()
+    {
+        return new PlayerRewardCommandResult(
+            IsReplay: false,
+            PlayerRewardCommandStatus.NoReward,
+            PlayerRewardCommandError.None,
             Receipt: null);
     }
 

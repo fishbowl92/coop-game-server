@@ -1,9 +1,9 @@
 # 4주차 세부 설계 01 — PlayerGrain과 보상 영속 책임 경계
 
-- 문서 상태: 제안됨(Proposed)
+- 문서 상태: 승인 및 부분 구현됨(Approved / Partially Implemented)
 - 최초 작성일: 2026-08-21
 - 대상 주차: 4주차 — 게임 룸·전투 결과·재접속
-- 구현 상태: 1차 심층 검토 반영, 코드 미구현
+- 구현 상태: PlayerGrain·PostgreSQL Writer·게임 결과 보상 정책·Pending 기록 구현, GameRoom 자동 전달·복구 대기
 - 상위 문서: [4주차 전체 설계 — 게임 룸·전투·재접속](week-04-game-room-reconnect-overview.md)
 - 관련 결정: [ADR 0001 — Orleans 사용](../adr/0001-use-orleans-for-game-entity-coordination.md), [ADR 0003 — 멱등성 키](../adr/0003-use-idempotency-keys-for-state-changing-requests.md)
 
@@ -340,11 +340,11 @@ sequenceDiagram
 
 | QueueKey | 결과 | 골드 | 아이템 |
 |---|---:|---:|---|
-| `coop-dungeon-normal-v1` | 승리 | 500 | 테스트용 아이템 1개 |
+| `coop-dungeon-normal-v1` | 승리 | 500 | 아이템 ID `1001` 1개 |
 | `coop-dungeon-normal-v1` | 패배 | 0 | 없음 |
 | `coop-dungeon-normal-v1` | 취소 | 0 | 없음 |
 
-위 수치는 설계 예시이며 구현 전에 별도로 확정한다. 중요한 점은 클라이언트가 보상 수량을 결정하지 않는다는 것이다.
+위 수치는 첫 번째 구현 정책으로 확정했으며, 같은 정책 버전 `1`의 내용은 이후 변경하지 않는다. 보상 수치를 바꾸려면 버전 `2`를 추가해야 한다. 중요한 점은 클라이언트가 보상 수량을 결정하지 않는다는 것이다.
 
 패배·취소 정책처럼 골드가 0이고 아이템도 없는 경우에는 `IRewardWriter`를 호출하거나 `reward_audits` 행을 만들지 않는다. 현재 도메인과 DB는 실제 지급이 하나 이상인 감사 이력만 허용하기 때문이다. 대신 PlayerGrain은 `NoReward`를 반환하고 GameRoom은 해당 Player의 `game_results` 상태를 `NoReward`로 확정한다. 따라서 무보상도 실패가 아니라 한 번 확정된 정상 결과다.
 
@@ -658,11 +658,12 @@ HTTP 클라이언트 연결이 끊겼다는 이유만으로 이미 Grain에 전�
 - Silo의 DB 기반 Recovery Service가 Pending 전달을 자동 재개한다.
 - 예상 영구 오류는 `TerminalFailure`, DB·네트워크 일시 오류는 `PendingRetry`로 구분한다.
 
-사용자 검토 후 수치만 확정할 항목은 다음과 같다.
+아직 수치를 확정해야 하는 항목은 다음과 같다.
 
-1. 초기 게임 완료 보상 수치와 테스트용 아이템 ID
-2. DB Command Timeout 초기값
-3. Recovery Service의 조회 주기와 최대 Backoff 수치
+1. DB Command Timeout 초기값
+2. Recovery Service의 조회 주기와 최대 Backoff 수치
+
+초기 게임 완료 보상은 `coop-dungeon-normal-v1`·정책 버전 `1`의 승리에 골드 500과 아이템 ID `1001` 1개를 지급하는 것으로 확정했다. 패배·취소는 보상 Writer를 호출하지 않는 정상 `NoReward`이다.
 
 ## 19. 완료 기준
 

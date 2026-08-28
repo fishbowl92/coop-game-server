@@ -332,7 +332,82 @@ public sealed class PlayerGrainTests(OrleansTestClusterFixture fixture)
     }
 
     [Fact]
-    public async Task CompleteGameAsyncDistinguishesInvalidCommandFromUnsupportedPolicy()
+    public async Task CompleteGameVictoryAppliesVersionedServerRewardAndReplaysIt()
+    {
+        var playerId = Guid.NewGuid();
+        await _fixture.RegisterPlayersAsync(playerId);
+        var player = GetPlayer(playerId);
+        var command = new CompletePlayerGameCommand(
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            "coop-dungeon-normal-v1",
+            GameOutcome.Victory,
+            RewardPolicyVersion: 1);
+
+        var firstResult = await player.CompleteGameAsync(command);
+        var replayResult = await player.CompleteGameAsync(command);
+
+        Assert.Equal(PlayerRewardCommandStatus.Applied, firstResult.Status);
+        Assert.Equal(PlayerRewardCommandError.None, firstResult.Error);
+        Assert.False(firstResult.IsReplay);
+
+        var firstReceipt = Assert.IsType<PlayerRewardReceipt>(firstResult.Receipt);
+        Assert.Equal(command.RequestId, firstReceipt.RequestId);
+        Assert.Equal(playerId, firstReceipt.PlayerId);
+        Assert.Equal(500, firstReceipt.GoldAmount);
+        Assert.Equal(1001, firstReceipt.ItemId);
+        Assert.Equal(1, firstReceipt.ItemQuantity);
+        Assert.Contains(command.RoomId.ToString("D"), firstReceipt.Reason, StringComparison.Ordinal);
+        Assert.Contains(command.QueueKey, firstReceipt.Reason, StringComparison.Ordinal);
+
+        Assert.Equal(PlayerRewardCommandStatus.Applied, replayResult.Status);
+        Assert.Equal(PlayerRewardCommandError.None, replayResult.Error);
+        Assert.True(replayResult.IsReplay);
+        Assert.Equal(firstReceipt.RewardAuditId, replayResult.Receipt?.RewardAuditId);
+
+        await using var gameDbContext = _fixture.CreateDbContext();
+        Assert.Equal(
+            500,
+            (await gameDbContext.PlayerWallets.SingleAsync(entity => entity.PlayerId == playerId)).Gold);
+        Assert.Equal(
+            1,
+            (await gameDbContext.InventoryItems.SingleAsync(
+                entity => entity.PlayerId == playerId && entity.ItemId == 1001)).Quantity);
+        Assert.Equal(
+            1,
+            await gameDbContext.RewardAudits.CountAsync(entity => entity.RequestId == command.RequestId));
+    }
+
+    [Theory]
+    [InlineData(GameOutcome.Defeat)]
+    [InlineData(GameOutcome.Cancelled)]
+    public async Task CompleteGameNonVictoryReturnsNoRewardWithoutWritingAudit(GameOutcome outcome)
+    {
+        var playerId = Guid.NewGuid();
+        await _fixture.RegisterPlayersAsync(playerId);
+        var requestId = Guid.NewGuid();
+
+        var result = await GetPlayer(playerId).CompleteGameAsync(
+            new CompletePlayerGameCommand(
+                requestId,
+                Guid.NewGuid(),
+                "coop-dungeon-normal-v1",
+                outcome,
+                RewardPolicyVersion: 1));
+
+        Assert.Equal(PlayerRewardCommandStatus.NoReward, result.Status);
+        Assert.Equal(PlayerRewardCommandError.None, result.Error);
+        Assert.False(result.IsReplay);
+        Assert.Null(result.Receipt);
+
+        await using var gameDbContext = _fixture.CreateDbContext();
+        Assert.False(await gameDbContext.PlayerWallets.AnyAsync(entity => entity.PlayerId == playerId));
+        Assert.False(await gameDbContext.InventoryItems.AnyAsync(entity => entity.PlayerId == playerId));
+        Assert.False(await gameDbContext.RewardAudits.AnyAsync(entity => entity.RequestId == requestId));
+    }
+
+    [Fact]
+    public async Task CompleteGameDistinguishesInvalidUnsupportedAndMissingPlayerResults()
     {
         var playerId = Guid.NewGuid();
         await _fixture.RegisterPlayersAsync(playerId);
@@ -345,21 +420,43 @@ public sealed class PlayerGrainTests(OrleansTestClusterFixture fixture)
                 "coop-dungeon-normal-v1",
                 GameOutcome.Victory,
                 RewardPolicyVersion: 1));
-        var unsupportedPolicyResult = await player.CompleteGameAsync(
+        var unsupportedQueueResult = await player.CompleteGameAsync(
+            new CompletePlayerGameCommand(
+                Guid.NewGuid(),
+                Guid.NewGuid(),
+                "unsupported-queue",
+                GameOutcome.Victory,
+                RewardPolicyVersion: 1));
+        var unsupportedVersionResult = await player.CompleteGameAsync(
             new CompletePlayerGameCommand(
                 Guid.NewGuid(),
                 Guid.NewGuid(),
                 "coop-dungeon-normal-v1",
                 GameOutcome.Victory,
+                RewardPolicyVersion: 999));
+        var missingPlayerResult = await GetPlayer(Guid.NewGuid()).CompleteGameAsync(
+            new CompletePlayerGameCommand(
+                Guid.NewGuid(),
+                Guid.NewGuid(),
+                "coop-dungeon-normal-v1",
+                GameOutcome.Defeat,
                 RewardPolicyVersion: 1));
 
         Assert.Equal(PlayerRewardCommandStatus.Rejected, invalidResult.Status);
         Assert.Equal(PlayerRewardCommandError.InvalidRequest, invalidResult.Error);
         Assert.Null(invalidResult.Receipt);
 
-        Assert.Equal(PlayerRewardCommandStatus.Rejected, unsupportedPolicyResult.Status);
-        Assert.Equal(PlayerRewardCommandError.UnsupportedRewardPolicy, unsupportedPolicyResult.Error);
-        Assert.Null(unsupportedPolicyResult.Receipt);
+        Assert.Equal(PlayerRewardCommandStatus.Rejected, unsupportedQueueResult.Status);
+        Assert.Equal(PlayerRewardCommandError.UnsupportedRewardPolicy, unsupportedQueueResult.Error);
+        Assert.Null(unsupportedQueueResult.Receipt);
+
+        Assert.Equal(PlayerRewardCommandStatus.Rejected, unsupportedVersionResult.Status);
+        Assert.Equal(PlayerRewardCommandError.UnsupportedRewardPolicy, unsupportedVersionResult.Error);
+        Assert.Null(unsupportedVersionResult.Receipt);
+
+        Assert.Equal(PlayerRewardCommandStatus.Rejected, missingPlayerResult.Status);
+        Assert.Equal(PlayerRewardCommandError.PlayerNotFound, missingPlayerResult.Error);
+        Assert.Null(missingPlayerResult.Receipt);
     }
 
     /// <summary>Guid Grain Key를 사용하는 PlayerGrain Proxy를 반환합니다.</summary>

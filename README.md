@@ -19,6 +19,7 @@
 - MatchQueueGrain의 솔로·사전 구성 파티 등록, 취소, 정확히 4명 조합과 재시작 복원
 - GameRoomGrain의 Ready → InGame → Completed 생명주기, Victory·Defeat·Cancelled 결과와 고정된 보상 정책 버전 저장
 - 방 완료 Transaction에서 네 참가자의 `game_results` Pending 전달 상태와 결정적 보상 요청 ID 생성
+- PlayerGrain의 `coop-dungeon-normal-v1` 정책 버전 1 승리 보상과 패배·취소 정상 무보상 처리
 - 게임 완료 후 Matched 티켓을 Completed로 해제하고 같은 참가자의 다음 매칭 허용
 - 외부 API에서 `coop-dungeon-normal-v1` 단일 Queue만 허용하는 서버 정의 정책
 - 일반 Player의 본인 데이터·파티 조작 인가와 관리자 전용 보상·진단 API 제한
@@ -238,5 +239,5 @@ docker compose down
 - Redis는 컨테이너만 있으며 애플리케이션 코드에서 사용하지 않습니다.
 - 현재 공개 Queue는 `coop-dungeon-normal-v1` 하나입니다. 여러 Queue를 추가하기 전에는 Player 전역 매칭 예약이 필요합니다.
 - GameRoom은 최소 생명주기와 최종 결과만 있으며 공격·스킬·웨이브·재접속은 아직 없습니다.
-- GameRoom 완료 결과·보상 정책 버전과 Player별 Pending 전달 상태는 저장하지만, 실제 결과 보상은 아직 PlayerGrain에 연결되지 않았습니다.
+- PlayerGrain의 게임 완료 보상 정책은 구현했지만, GameRoom이 Pending 결과를 읽어 PlayerGrain을 자동 호출하는 전달 단계는 아직 연결되지 않았습니다.
 - 다음 기능은 Pending 결과를 PlayerGrain에 전달하고 `Applied`·`NoReward`·`PendingRetry`·`TerminalFailure` 중 하나로 갱신하는 것입니다.
