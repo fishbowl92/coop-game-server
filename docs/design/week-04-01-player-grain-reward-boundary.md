@@ -1,9 +1,9 @@
 # 4주차 세부 설계 01 — PlayerGrain과 보상 영속 책임 경계
 
-- 문서 상태: 승인 및 부분 구현됨(Approved / Partially Implemented)
+- 문서 상태: 승인 및 구현됨(Approved / Implemented)
 - 최초 작성일: 2026-08-21
 - 대상 주차: 4주차 — 게임 룸·전투 결과·재접속
-- 구현 상태: PlayerGrain·PostgreSQL Writer·게임 결과 보상 정책·Pending 기록·GameRoom 자동 전달 구현, Silo 복구 서비스 대기
+- 구현 상태: PlayerGrain·PostgreSQL Writer·게임 결과 보상 정책·Pending 기록·GameRoom 자동 전달·Silo 자동 복구 구현
 - 상위 문서: [4주차 전체 설계 — 게임 룸·전투·재접속](week-04-game-room-reconnect-overview.md)
 - 관련 결정: [ADR 0001 — Orleans 사용](../adr/0001-use-orleans-for-game-entity-coordination.md), [ADR 0003 — 멱등성 키](../adr/0003-use-idempotency-keys-for-state-changing-requests.md)
 
@@ -500,11 +500,13 @@ Task FinalizeCompletedRoomAsync();
 
 이 메서드는 HTTP API로 공개하지 않는다. Silo 내부 복구 서비스와 같은 완료 요청의 재생 경로만 호출한다. 메서드는 Party 복귀, Ticket 완료, Player별 `Pending`·`PendingRetry` 결과를 DB에서 다시 읽고 끝나지 않은 단계만 조정하므로 Worker가 과거 상태를 매개변수로 전달하지 않는다. 보상 재시도는 이 메서드 내부 단계이며 별도의 공개 `RetryPendingRewardsAsync` 계약을 만들지 않는다.
 
-현재 구현은 완료 직후와 같은 완료 요청 재생 시 `FinalizeCompletedRoomAsync`를 호출하여 Player별 보상을 전달한다. Player 응답은 한 행씩 즉시 저장하므로 일부 Player만 성공해도 성공 상태가 보존된다. 다음 단계에서는 같은 메서드를 호출하는 Silo 복구 서비스를 추가해 재시작 뒤 남은 `Pending`·기한이 지난 `PendingRetry`도 자동 처리한다.
+현재 구현은 완료 직후와 같은 완료 요청 재생 시 `FinalizeCompletedRoomAsync`를 호출하여 Player별 보상을 전달한다. Player 응답은 한 행씩 즉시 저장하므로 일부 Player만 성공해도 성공 상태가 보존된다. Silo의 `GameRoomRecoveryService`는 시작 직후와 이후 5초 간격으로 최대 100개의 Room ID를 조회하고, 같은 메서드를 호출해 재시작 뒤 남은 `Pending`·기한이 지난 `PendingRetry`도 자동 처리한다.
 
 Recovery Service(복구 서비스)는 보상을 직접 지급하지 않는다. DB에서 Room ID를 찾아 Grain을 깨우는 역할만 담당하며, 실제 상태 확인과 PlayerGrain 호출은 항상 GameRoomGrain이 수행한다. 이 Worker는 재접속 기한 복구 설계에서도 공통으로 사용하고, 조회 조건만 만료 기한과 보상 재시도 시각으로 나눈다. 이렇게 하면 Silo 재시작 뒤에도 Worker가 Pending 행을 다시 찾아 처리를 이어갈 수 있다.
 
 - 첫 재시도 간격은 5초로 시작하고 최대 1분까지 늘리는 제한된 지수 Backoff(백오프, 실패할수록 재시도 간격을 늘리는 방식)를 사용한다.
+- Recovery Service의 기본 조회 주기는 5초이고 한 번에 처리하는 서로 다른 방은 최대 100개다.
+- 한 방의 호출 실패는 같은 Batch(배치, 한 번에 묶어 처리하는 작업 단위)의 다른 방 처리를 중단시키지 않는다.
 - 일시 오류는 횟수만으로 `TerminalFailure`로 바꾸지 않는다.
 - 다중 Silo에서 Worker 중복 실행을 막는 Lease(임대 잠금)는 운영 확장 항목이다. 4주차 단일 Silo에서는 결정적 ID와 DB 제약으로 중복 지급을 막는다.
 
@@ -660,10 +662,7 @@ HTTP 클라이언트 연결이 끊겼다는 이유만으로 이미 Grain에 전�
 - Silo의 DB 기반 Recovery Service가 Pending 전달을 자동 재개한다.
 - 예상 영구 오류는 `TerminalFailure`, DB·네트워크 일시 오류는 `PendingRetry`로 구분한다.
 
-아직 수치를 확정해야 하는 항목은 다음과 같다.
-
-1. DB Command Timeout 초기값
-2. Recovery Service의 조회 주기와 최대 Backoff 수치
+Recovery Service의 조회 주기는 5초, 한 번의 최대 조회량은 100개 방, GameRoom 내부 재시도 Backoff는 최초 5초·최대 60초로 확정했다. DB Command Timeout(데이터베이스 명령 시간 제한)의 명시적 초기값은 실제 부하 측정 전까지 Npgsql 기본값을 사용하며, 운영 확장 단계에서 부하 테스트 결과로 결정한다.
 
 초기 게임 완료 보상은 `coop-dungeon-normal-v1`·정책 버전 `1`의 승리에 골드 500과 아이템 ID `1001` 1개를 지급하는 것으로 확정했다. 패배·취소는 보상 Writer를 호출하지 않는 정상 `NoReward`이다.
 

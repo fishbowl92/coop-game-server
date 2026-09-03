@@ -2,7 +2,7 @@
 
 > Microsoft Orleans 기반 협동 게임 서비스 백엔드를 단계적으로 구현하는 C#·.NET 10 프로젝트입니다.
 
-현재는 Player 프로필·인증, 재화·인벤토리 보상, PartyGrain, MatchQueueGrain, GameRoomGrain과 PostgreSQL 영속성을 구현했습니다. 사전 구성 파티와 솔로를 정확히 4명으로 매칭하고, 게임 방의 최종 결과와 보상 정책 버전을 저장한 뒤 파티를 유지한 채 로비로 복귀시키며, 완료된 티켓을 해제해 같은 참가자가 다음 게임에 다시 매칭될 수 있습니다. Redis 애플리케이션 연동·실제 전투·재접속·운영 배포는 아직 구현하지 않았습니다.
+현재는 Player 프로필·인증, 재화·인벤토리 보상, PartyGrain, MatchQueueGrain, GameRoomGrain과 PostgreSQL 영속성을 구현했습니다. 사전 구성 파티와 솔로를 정확히 4명으로 매칭하고, 게임 방의 최종 결과와 보상 정책 버전을 저장한 뒤 파티를 유지한 채 로비로 복귀시킵니다. Silo 재시작 뒤 미완료 결과 전달도 자동으로 재개하며, 완료된 티켓을 해제해 같은 참가자가 다음 게임에 다시 매칭될 수 있습니다. Redis 애플리케이션 연동·실제 전투·재접속·운영 배포는 아직 구현하지 않았습니다.
 
 ## 현재 구현 범위
 
@@ -20,6 +20,7 @@
 - GameRoomGrain의 Ready → InGame → Completed 생명주기, Victory·Defeat·Cancelled 결과와 고정된 보상 정책 버전 저장
 - 방 완료 Transaction에서 네 참가자의 `game_results` Pending 전달 상태와 결정적 보상 요청 ID 생성
 - GameRoomGrain이 PlayerGrain에 결과를 전달하고 `Applied`·`NoReward`·`PendingRetry`·`TerminalFailure` 상태로 개별 저장
+- Silo의 GameRoomRecoveryService가 `Pending`과 기한이 지난 `PendingRetry` 방을 찾아 결과 전달 자동 재개
 - PlayerGrain의 `coop-dungeon-normal-v1` 정책 버전 1 승리 보상과 패배·취소 정상 무보상 처리
 - 게임 완료 후 Matched 티켓을 Completed로 해제하고 같은 참가자의 다음 매칭 허용
 - 외부 API에서 `coop-dungeon-normal-v1` 단일 Queue만 허용하는 서버 정의 정책
@@ -39,6 +40,9 @@ HTTP Client
     └─ Matchmaking·GameRoom API ──> JWT 인가 ──> Party·Queue·Room Grain ──> PostgreSQL
 
 IntegrationTests ──> Orleans TestCluster ──> Party·MatchQueue·GameRoom Grain ──> PostgreSQL
+
+Silo BackgroundService ──> PostgreSQL(game_results 미완료 방 조회)
+                       └─> GameRoomGrain ──> PlayerGrain ──> 보상 재확인
 
 Redis: 컨테이너만 준비됨, 애플리케이션 연결은 아직 없음
 ```
@@ -169,6 +173,8 @@ dotnet run --project .\src\CoopGameServer.Silo\CoopGameServer.Silo.csproj
 
 Silo(사일로)는 Orleans Grain을 메모리에서 실행하는 서버 프로세스입니다. 현재 로컬 개발에서는 Silo 포트 `11111`과 Gateway(게이트웨이, Client 연결 입구) 포트 `30000`을 사용합니다.
 
+Silo 안의 `GameRoomRecoveryService`도 함께 시작됩니다. 시작 직후와 이후 5초마다 PostgreSQL을 조회하고, 한 번에 최대 100개의 미완료 방을 처리합니다. 복구 서비스는 보상을 직접 지급하지 않고 `GameRoomGrain.FinalizeCompletedRoomAsync()`만 호출하므로 완료 직후와 자동 복구가 같은 멱등성 경로를 사용합니다.
+
 ### 8. API 실행 — PowerShell 창 B
 
 ```powershell
@@ -240,5 +246,5 @@ docker compose down
 - Redis는 컨테이너만 있으며 애플리케이션 코드에서 사용하지 않습니다.
 - 현재 공개 Queue는 `coop-dungeon-normal-v1` 하나입니다. 여러 Queue를 추가하기 전에는 Player 전역 매칭 예약이 필요합니다.
 - GameRoom은 최소 생명주기와 최종 결과만 있으며 공격·스킬·웨이브·재접속은 아직 없습니다.
-- GameRoom 완료 직후의 PlayerGrain 결과 전달은 구현했지만, Silo 재시작 뒤 재시도 시각이 지난 `PendingRetry`를 자동으로 깨우는 복구 서비스는 아직 없습니다.
-- 다음 기능은 DB에서 재시도 대상 Room ID를 찾고 `FinalizeCompletedRoomAsync`를 호출하는 단일 Silo 복구 서비스입니다.
+- 현재 복구 Worker는 단일 Silo 학습 범위입니다. 다중 Silo에서 중복 조회를 조정하는 Lease(임대 잠금)는 운영 확장 항목입니다.
+- 다음 핵심 기능은 게임 방 참가자 전투 상태, 기본 공격·스킬과 3개 Wave(웨이브, 전투 단계) 상태 전이입니다.
