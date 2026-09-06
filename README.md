@@ -4,6 +4,20 @@
 
 현재는 Player 프로필·인증, 재화·인벤토리 보상, PartyGrain, MatchQueueGrain, GameRoomGrain과 PostgreSQL 영속성을 구현했습니다. 사전 구성 파티와 솔로를 정확히 4명으로 매칭하고, 게임 방의 최종 결과와 보상 정책 버전을 저장한 뒤 파티를 유지한 채 로비로 복귀시킵니다. Silo 재시작 뒤 미완료 결과 전달도 자동으로 재개하며, 완료된 티켓을 해제해 같은 참가자가 다음 게임에 다시 매칭될 수 있습니다. Redis 애플리케이션 연동·실제 전투·재접속·운영 배포는 아직 구현하지 않았습니다.
 
+## 포트폴리오 빠른 검토
+
+개인 학습 프로젝트이며 AI(Artificial Intelligence, 인공지능)를 구현·설명·검증 보조에 활용합니다. 요구사항·설계 판단·검증 범위와 현재 한계를 구분해 기록하고 있습니다.
+
+[개인 프로젝트 범위와 대표 구현·테스트 안내](./docs/PORTFOLIO.md)
+
+| 먼저 볼 내용 | 구현 코드 | 확인할 테스트 |
+| --- | --- | --- |
+| 보상 중복 방지와 동시 갱신 | [보상 저장 처리](https://github.com/fishbowl92/coop-game-server/blob/f186650b479674b67e5b5c87d2df1e88e428804c/src/CoopGameServer.Persistence/Rewards/PostgreSqlRewardWriter.cs#L40-L151) | [동일 요청 동시 처리](https://github.com/fishbowl92/coop-game-server/blob/f186650b479674b67e5b5c87d2df1e88e428804c/tests/CoopGameServer.IntegrationTests/Persistence/Rewards/PostgreSqlRewardWriterIntegrationTests.cs#L49-L89) |
+| 파티를 유지하는 4인 매칭 | [매칭 등록 경로](https://github.com/fishbowl92/coop-game-server/blob/f186650b479674b67e5b5c87d2df1e88e428804c/src/CoopGameServer.Grains/Matchmaking/MatchQueueGrain.cs#L74-L87) | [파티 조합 검사](https://github.com/fishbowl92/coop-game-server/blob/f186650b479674b67e5b5c87d2df1e88e428804c/tests/CoopGameServer.IntegrationTests/Grains/Matchmaking/MatchQueueGrainTests.cs#L19-L78) |
+| 결과 전달 자동 복구 | [미완료 방 복구 처리](https://github.com/fishbowl92/coop-game-server/blob/f186650b479674b67e5b5c87d2df1e88e428804c/src/CoopGameServer.Grains/GameRooms/GameRoomRecoveryProcessor.cs#L29-L68) | [재시작·중복 보상 검사](https://github.com/fishbowl92/coop-game-server/blob/f186650b479674b67e5b5c87d2df1e88e428804c/tests/CoopGameServer.IntegrationTests/Grains/GameRooms/GameRoomRecoveryProcessorTests.cs#L21-L68) |
+
+위 링크는 검토 시점의 코드에 고정되어 있습니다. 자동 테스트의 요청 수는 운영 성능 수치가 아닙니다. 실행 환경을 구성하려면 아래 [처음 실행](#처음-실행)을 확인해 주세요.
+
 ## 현재 구현 범위
 
 - 회원 가입·로그인과 비밀번호 해시 저장, JWT 접근 토큰 발급
@@ -232,12 +246,12 @@ docker compose down
 
 ## 설계 문서
 
-- `docs/adr/0001-use-orleans-for-game-entity-coordination.md`: Orleans 선택 이유
-- `docs/adr/0002-separate-postgresql-and-redis-responsibilities.md`: PostgreSQL·Redis 책임 분리
-- `docs/adr/0003-use-idempotency-keys-for-state-changing-requests.md`: 상태 변경 요청의 멱등성 키 원칙
-- `docs/adr/0004-use-ef-core-for-player-persistence.md`: Player 영속성에 EF Core를 선택한 이유
-- `docs/architecture/request-cancellation-and-retry.md`: 요청 취소·재시도 원칙
-- `docs/runbooks/local-development.md`: 로컬 실행·문제 해결 절차
+- [Orleans 선택 이유](./docs/adr/0001-use-orleans-for-game-entity-coordination.md)
+- [PostgreSQL·Redis 책임 분리](./docs/adr/0002-separate-postgresql-and-redis-responsibilities.md)
+- [상태 변경 요청의 멱등성 키 원칙](./docs/adr/0003-use-idempotency-keys-for-state-changing-requests.md)
+- [Player 영속성에 EF Core를 선택한 이유](./docs/adr/0004-use-ef-core-for-player-persistence.md)
+- [요청 취소·재시도 원칙](./docs/architecture/request-cancellation-and-retry.md)
+- [로컬 실행·문제 해결 절차](./docs/runbooks/local-development.md)
 
 ## 현재 한계와 다음 목표
 
