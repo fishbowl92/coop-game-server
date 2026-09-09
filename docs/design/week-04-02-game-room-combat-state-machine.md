@@ -2,13 +2,14 @@
 
 - 문서 상태: 제안됨(Proposed)
 - 최초 작성일: 2026-08-21
-- 구현 상태: 1차 심층 검토 반영, 코드 미구현
+- 최근 검토일: 2026-09-10
+- 구현 상태: 결과·보상 전달, 요청 증분 저장, 참가자 상태, 웨이브 저장·첫 웨이브 초기화·상태 버전 구현. 공격·자동 웨이브 진행·연결 처리는 미구현
 - 상위 문서: [4주차 전체 설계 — 게임 룸·전투·재접속](week-04-game-room-reconnect-overview.md)
 - 선행 문서: [PlayerGrain과 보상 영속 책임 경계](week-04-01-player-grain-reward-boundary.md)
 
 ## 1. 문서 목적
 
-현재 `GameRoomGrain`은 `Ready → InGame → Completed`만 관리한다. 4주차에는 이 안에 최소 협동 전투와 웨이브 진행 규칙을 추가한다.
+현재 `GameRoomGrain`은 `Ready → InGame → Completed`, 실제 저장된 `GameOutcome`, 보상 정책 버전과 플레이어별 결과 전달을 관리한다. 다음 단계에서 이 안에 최소 협동 전투와 웨이브 진행 규칙을 추가한다. 아래 전투 자료형·테이블 확장은 구현 예정 설계이며, 이미 존재하는 필드는 재생성하지 않는다.
 
 이 문서는 다음 질문에 답한다.
 
@@ -99,7 +100,7 @@ public sealed record CancelGameRoomCommand(
 ```
 
 외부 관리자 API는 `OperatorRequested`만 만들 수 있다. 최초 연결 제한 만료는 서버가
-`InitialConnectionTimeout`과 결정적 requestId를 사용해 내부에서 호출한다. `LegacyMigration`은 기존 행 Backfill에만 사용한다.
+`InitialConnectionTimeout`과 결정적 requestId를 사용해 내부에서 호출한다. `LegacyMigration`은 실제 원인이 확인된 과거 취소의 호환 표현으로만 예약한다. 기존 완료 방을 이 값으로 일괄 취소하지 않는다.
 
 ## 4. 전체 상태 전이
 
@@ -160,7 +161,7 @@ public sealed record GameRoomCombatSnapshot(
 | `EnemyCurrentHealth` | 현재 웨이브 적의 남은 체력 |
 | `StateVersion` | 방 상태가 성공적으로 변경될 때마다 증가하는 버전 |
 | `EnemyAttackSequence` | 실제 적 반격이 발생할 때마다 1씩 증가하는 결정적 대상 선택 순번 |
-| `CombatRuleVersion` | 방이 시작할 때 고정한 전투 규칙 버전 |
+| `CombatRuleVersion` | 새 방 생성 때 고정하는 전투 규칙 버전, 0은 전투 상세 없는 과거 완료 기록 전용 |
 | `Players` | 네 명의 전투·접속 상태 스냅샷 |
 
 `StateVersion`은 클라이언트가 받은 스냅샷이 오래됐는지 판단하는 보조 정보다. 명령의 멱등성 키나 Player별 명령 순번을 대신하지 않는다.
@@ -342,6 +343,8 @@ Invariant(불변 조건)는 명령 처리 전후에 항상 참이어야 하는 �
 
 ### 12.1 방 불변 조건
 
+아래는 공격·종료 판정까지 연결한 최종 목표 불변 조건이다. 현재 단계의 구조·체력·버전 검사는 13.7절에 정리한다. 웨이브 상세 유무는 `MaxWaves`로 구분한다. `MaxWaves = 0`인 과거 완료 기록에는 없는 전투 과정을 만들어 채우지 않으며, 저장된 승패·시각·보상 이력을 보존한다. 참가자 상태를 먼저 구현한 중간 단계의 완료 방은 CombatRuleVersion이 1이어도 웨이브 상세가 없을 수 있다.
+
 - Player는 항상 정확히 네 명이고 중복되지 않는다.
 - `Ready`에서는 `CurrentWave = 0`, `Outcome = None`, `StartedAt = null`, `CompletedAt = null`이다.
 - `InGame`에서는 `1 <= CurrentWave <= MaxWaves`, `Outcome = None`, `StartedAt != null`, `CompletedAt = null`이다.
@@ -369,7 +372,7 @@ DB Check Constraint(검사 제약 조건)로 표현할 수 있는 규칙은 Post
 
 ### 13.1 game_rooms 확장
 
-추가 후보 열:
+최종 모델의 열 목록은 다음과 같다. `outcome`과 `reward_policy_version`은 이미 있으므로 향후 Migration에서 다시 추가하거나 기본값으로 덮어쓰지 않는다.
 
 ```text
 outcome
@@ -478,7 +481,9 @@ WHERE accepted_command_sequence IS NOT NULL;
 이 구조라면 쿨다운 거부 결과를 requestId로 재생하면서도, 시간이 지난 뒤 새 requestId와 같은 commandSequence로 다시 시도할 수 있다.
 이미 성공한 같은 순번에 다른 명령이 들어오면 충돌로 처리한다.
 
-### 13.4 game_results 생성
+### 13.4 game_results 유지
+
+이 테이블과 결과 전달은 이미 구현되어 있다. 전투 확장 시 기존 행을 삭제하거나 전달 상태를 Pending으로 초기화하지 않는다.
 
 모든 `Victory`, `Defeat`, `Cancelled` 완료에는 네 참가자의 결과 행을 한 개씩 만든다.
 
@@ -499,11 +504,12 @@ updated_at
 - 승리 정책의 실제 지급은 `Applied`, 패배·취소 정책의 무지급은 `NoReward`로 확정한다.
 - `NoReward`에는 `reward_audits` 행을 만들지 않는다.
 
-현재 `CK_game_room_requests_payload_shape`는 Create·Start·Complete만 허용하므로 같은 Migration에서 다음 정본 표로 교체한다. 기존 `Start`·`Complete` 요청 행은 감사 이력으로 보존하고 새 코드에서는 더 이상 생성하지 않는다.
+현재 `CK_game_room_requests_payload_shape`는 Create·Start·Complete만 허용한다. 향후 전투·연결 명령을 도입하는 Migration에서 다음 표로 확장한다. 현재 코드는 계속 Start·Complete를 생성하며, 전투 명령으로 전환한 뒤에만 새 기록 생성을 중단한다. 기존 행은 감사 이력으로 보존한다.
 
 | `command_kind` | 새 기록 여부 | payload | `accepted_command_sequence` |
 |---|---|---|---|
-| `Start`, `Complete` | 기존 Legacy 행만 허용 | null | null |
+| `Start` | 전환 후 기존 이력만 허용 | null | null |
+| `Complete` | 전환 후 기존 이력만 허용 | 저장된 Outcome JSON 필수 | null |
 | `Create` | 기록 | 필수 | null |
 | `StartCombat` | 기록 | 호출자 connectionId·generation 필수 | null |
 | `BasicAttack`, `UseSkill` | 성공·도메인 거부 기록 | 필수 | 성공일 때만 값 |
@@ -516,27 +522,95 @@ updated_at
 requestId 충돌 비교에는 외부에서 받은 원시 JSON 문자열을 사용하지 않는다. API가 만든 타입 안전 내부 명령을
 고정된 속성 순서와 열거형 표현으로 직렬화한 Canonical Payload(정규화 본문)를 저장하고 같은 방식으로 비교한다.
 
-### 13.5 기존 3주차 데이터 Migration과 Backfill
+### 13.5 기존 데이터 Migration과 Backfill
 
-Backfill(백필, 새 열에 기존 행의 값을 채우는 작업) 없이 `Outcome NOT NULL` 또는 새 Player 행 제약을 바로 적용하면
-현재 로컬 DB의 기존 GameRoom 행을 변환할 수 없다. Migration은 다음 순서를 사용한다.
+Migration(마이그레이션, DB 구조 변경)과 Backfill(백필, 새 필드에 기존 데이터의 호환 값을 채우는 작업)은 다음 원칙으로 설계한다. 2026-09-08에는 보존 원칙만 정리했고, 2026-09-10에는 참가자 상태에 해당하는 부분을 구현했다. 적용 범위와 아직 남은 부분은 13.6절에서 구분한다.
 
-1. 새 열을 임시 nullable 또는 안전한 기본값으로 추가한다.
-2. Migration 시작 시각을 UTC 값 하나로 계산해 `legacyCompletedAt`으로 고정한다. 역사적 완료 시각을 알 수 없는 행에만 이 값을 사용한다.
-3. 모든 기존 Room에 호환용 `reward_policy_version = 1`, 현재 `CombatRuleVersion`, `initial_connect_deadline = created_at + 기본 최초 접속 제한 시간`을 채운다. Initial deadline은 감사용으로 보존하되 Ready에서만 평가한다.
-4. 모든 기존 Room의 `player_ids` 순서를 사용해 정확히 네 개의 `game_room_players` 행을 만든다.
-   - 기존 Ready: 체력 기본값, `Active`, `AwaitingConnection`, generation 0, 성공 명령 순번 0
-   - 아래에서 LegacyMigration으로 완료할 InGame·Completed: 체력·순번 호환 기본값, 활성 연결이 없는 `Left`
-5. 기존 `Ready` 방은 `Outcome = None`, `CurrentWave = 0`으로 유지한다.
-6. 전투 상태를 복원할 자료가 없는 기존 `InGame` 방은 승패를 임의로 만들지 않고 `Completed + Cancelled + LegacyMigration`으로 전환하고, 기존 `started_at`은 보존하며 `completed_at = legacyCompletedAt`을 채운다.
-7. 기존 `Completed` 방 역시 과거에 검증된 승패가 없으므로 `Completed + Cancelled + LegacyMigration`으로 표시하고 기존 `started_at`·`completed_at`은 보존한다.
-8. 6·7번 방의 네 Player에 대해 저장된 정책 버전으로 결정적 `reward_request_id`를 만들고 `game_results = Pending` 행을 Backfill한다.
-9. 6·7번 방은 Party 복귀·Ticket 완료 후처리를 `Pending`으로 두어 Silo 활성화 뒤 `FinalizeCompletedRoomAsync`가 `NoReward`까지 멱등적으로 정리한다.
-10. `StateVersion = 1`, `EnemyAttackSequence = 0`을 채운다.
-11. 기존 `Start`·`Complete` 요청 행을 삭제하지 않고 Legacy null-payload 허용 분기로 보존한다.
-12. 정확히 네 Player 행, Ready의 initial deadline, terminal의 completed_at, 결과 행을 검증한 뒤 NOT NULL·CHECK·UNIQUE 제약을 적용한다.
+기준선은 현재 `AddGameResultDeliveryTracking`까지 적용된 DB다. 여기에는 이미 승패·보상 정책·지급 결과가 있다. 과거 3주차의 “승패가 전혀 없는 데이터”를 현재 모든 완료 행에 적용해서는 안 된다.
 
-학습용 개발 DB라고 해도 Migration에서 기존 행을 암묵적으로 삭제하지 않는다. 삭제가 필요하다면 별도의 명시적 개발 환경 초기화 절차로 수행한다.
+1. 스키마 이력과 기존 행의 불변 조건을 먼저 검사한다. 승패·정책·참가자·결과 행이 불일치하면 자동 보정하지 않고 중단해 원인을 확인한다.
+2. 전투 상세 없는 기존 `InGame` 방이 남아 있으면 전환을 중단한다. 기존 서버에서 정상 완료하거나 명시적으로 취소하는 절차를 먼저 수행한다. Migration이 임의로 취소·보상·파티 복귀를 실행하지 않는다.
+3. 기존 `Ready` 방은 참가자 순서를 보존하고 새 Player 상태·전투 규칙 버전 1을 초기화한다. 기존 Outcome·보상 정책 버전·생성 시각은 유지한다. 최초 접속 제한 시간은 전환 시점의 UTC를 기준으로 새 유예를 부여해, 오래된 생성 시각 때문에 즉시 만료되지 않도록 한다.
+4. 기존 `Completed` 방은 승리·패배·취소 결과와 started_at·completed_at을 그대로 유지한다. 참가자 상태 도입 이전 방은 `combat_rule_version = 0`으로 구분한다. 이미 참가자 단계의 버전 1로 저장된 방은 해당 버전을 바꾸지 않는다. 웨이브 상세가 없으면 별도로 `max_waves = 0`으로 표현한다. 호환 초기값을 실제 전투 이력으로 설명하거나 과거 승리를 맞추기 위해 마지막 웨이브를 완료한 것으로 꾸미지 않는다.
+5. Player 행은 기존 `player_ids`의 네 명과 순서를 보존해 생성한다. Ready는 `Active + AwaitingConnection`, 과거 완료 방은 활성 연결이 없는 `Left`다. 버전 0 허용은 과거 완료 방에만 제한하고 전투 관련 CHECK는 버전 1 이상에 적용한다.
+6. 기존 `game_results`의 reward_request_id·정책 버전·전달 상태·시도 횟수·다음 시도 시각·오류·갱신 시각은 그대로 보존한다. Applied·NoReward·TerminalFailure를 Pending으로 되돌리지 않는다. 필요한 결과 행이 누락됐다면 이 Migration이 새 지급 대상을 추측하지 않고 사전 검사를 실패시킨다.
+7. `game_room_requests`의 키·본문·최초 응답·시각을 원형대로 보존한다. 특히 현재 Complete는 Outcome JSON을 저장한다. 이를 null로 바꾸거나 최초 응답을 새 전투 스냅샷으로 다시 쓰지 않는다. 읽기 호환은 복원 코드에서 처리한다.
+8. 추가 필드의 NULL·CHECK·UNIQUE 제약과 복원 코드를 함께 검증한 뒤 전환한다. 복구 서비스는 보존된 실제 결과와 정책을 사용해 아직 미전달인 보상만 처리한다. Party·Ticket의 과거 성공 여부를 추정해 일괄 Pending 작업을 새로 만들지 않는다.
+
+버전 0의 참가자 읽기 계약·기본값·CHECK는 13.6절에서 구현했고, 웨이브·연결 관련 SQL은 후속 단계에 남아 있다. 현재 개발 DB가 비어 있어도 보존 원칙은 생략하지 않는다. 학습용 DB 초기화·삭제는 별도의 사용자 승인 작업이며 Migration의 기본 동작이 아니다.
+
+### 13.6 참가자 상태 저장 기반 구현 — 2026-09-10
+
+이번 단계는 공격 기능 자체가 아니라 **경기별 참가자 네 명의 상태를 보관할 공간과 복원 경로**다. 현재 시작·완료 명령은 기존 동작을 유지한다. 아직 체력이 공격에 의해 줄어들거나 웨이브로 승패를 판정하지 않는다.
+
+구현된 파일과 책임:
+
+| 파일·함수 | 역할과 필요한 이유 |
+|---|---|
+| `PlayerCombatSnapshot` | PlayerId·PlayerOrder·최대/현재 체력·전투 상태·마지막 승인 순번·공격/스킬 재사용 시각을 전송하는 읽기 계약 |
+| `GameRoomSnapshot`의 `CombatRuleVersion`, `Players` | 기존 Orleans 필드 번호 0~9를 보존하고 10~11에 추가. 과거 요청 JSON에 필드가 없으면 버전 0·Players null로 두어 최초 응답을 다시 쓰지 않음 |
+| `GameRoomPlayerRecord` 생성자·`Update` | roomId·playerId·playerOrder는 고정하고 체력·상태·순번·쿨다운만 EF Core로 매핑. Update는 공격 판정이 아니라 저장 후보 값 반영 |
+| `GameRoomState.Create` | 새 방의 규칙 버전 1, 네 명의 체력 100, 순번 0, 쿨다운 null을 초기화 |
+| `GameRoomState.CloneSnapshot` | Players 배열을 복제하여 응답 수정이 내부 상태를 바꾸지 못하게 함 |
+| `GameRoomGrain.SynchronizeParticipantsAsync(context, snapshot, isNewRoom)` | 새 방이면 네 행 삽입, 기존 방이면 구성 검증 후 전투 값 갱신. 방·요청 기록과 같은 트랜잭션에 참여 |
+| `GameRoomGrain.ValidateParticipants(snapshot)` | 참가자 수·중복·배정 순서·호환 배열·지원 버전을 검증. 누락된 행을 초기 체력으로 자동 복구하지 않음 |
+| `OnActivateAsync`·`RestoreSnapshot(record, participants)` | DB에서 배정 순서대로 상태를 읽어 Grain의 메모리를 복원 |
+
+현재 추가한 DB 구조:
+
+- `game_rooms.combat_rule_version`: 새 방 및 이전 Ready는 1, 과거 Completed는 0. 버전은 이후 Update로 변경하지 않는다.
+- `game_room_players`: `(room_id, player_id)` 복합 기본 키와 `(room_id, player_order)` 고유 인덱스, 방 외래 키를 사용한다.
+- CHECK(검사 제약): 순서 0~3, 양수 최대 체력, 현재 체력 범위, 체력과 전투 불능 상태의 일치, 0 이상 명령 순번을 검증한다.
+- 과거 완료 방의 체력 100은 행 형식을 맞추는 자리표시값이다. 버전 0이므로 실제 최종 체력이라고 해석해서는 안 된다.
+
+`AddGameRoomPlayerState` Migration은 구형 InGame 존재, 잘못된 참가자 배열, 누락되거나 참가자·정책이 맞지 않는 보상 결과를 구조 변경 전에 거부한다. Ready/Completed의 참가자 순서를 보존하여 네 행을 만든다. 기존 승패·보상 정책·시각·요청 JSON·결과 전달 행은 원형 보존한다. 테스트 검증 후 2026-09-10 개발 DB에도 적용했다. Down(역방향 적용)은 참가자 상세를 삭제하므로 일반적인 오류 해결 수단으로 실행하지 않는다.
+
+검증: 참가자 생성·응답 보호·체력/쿨다운 재시작 복원·DB 제약·생성 실패 원복·누락 행 복원 차단 9개, 기존 DB 보존·위험 데이터 전환 차단 4개를 추가했다. 이전 136개를 포함하여 총 149개가 통과했다.
+
+이 단계 직후 남겼던 확장 중 웨이브·적 체력·방 상태 버전은 13.7절에서 추가했다. 공격·스킬 판정, 연결 상태·자격 정보·최초 접속 제한 시간은 여전히 미구현이다. HTTP 응답의 전투 필드 공개도 후속 API 단계이며, 현재 새 필드는 내부 Grain 계약에 추가했다.
+
+### 13.7 웨이브·적 체력·상태 버전 구현 — 2026-09-10
+
+이번 단계는 **첫 웨이브의 초기화와 진행 값 저장**이다. 공격·스킬 요청이나 적 반격을 아직 실행하지 않는다.
+
+| 코드 | 추가·수정한 내용과 이유 |
+|---|---|
+| `Domain/GameRooms/GameRoomCombatRules.GetWave(ruleVersion, waveNumber)` | DB나 Orleans 없이 버전 1의 웨이브 설정을 선택. 지원하지 않는 버전·번호를 거부 |
+| `WaveDefinition(WaveNumber, EnemyMaxHealth, EnemyAttackPower)` | 1~3웨이브의 적 최대 체력 100/180/300, 공격력 5/10/15를 불변 설정으로 표현 |
+| `GameRoomSnapshot` | 기존 Id 0~11을 유지하고 12~17에 CurrentWave·MaxWaves·EnemyMaxHealth·EnemyCurrentHealth·StateVersion·EnemyAttackSequence 추가 |
+| `GameRoomState.Create` | StateVersion=1, MaxWaves=3, 나머지 진행 값 0으로 생성 |
+| `GameRoomState.Start` | 저장된 규칙 버전으로 1웨이브 적 체력 100을 초기화하고 버전을 정확히 1 증가. 참가자 상태는 보존 |
+| `GameRoomState.Complete` | 기존 관리자 결과 지정 동작을 유지하며 버전만 1 증가. 승패에 맞춰 웨이브·체력을 임의로 변경하지 않음 |
+| `GameRoomCommandError.StateVersionExhausted` | long.MaxValue에서 시작·완료를 거부해 오버플로로 음수가 되는 것을 방지. 기존 API는 409로 매핑 |
+| `GameRoomRecord.UpdateCombatProgress(...)` | 여섯 진행 값을 저장 후보에 반영. 방·참가자·요청 결과와 같은 DB 트랜잭션에 저장 |
+| `GameRoomGrain.RestoreSnapshot` | 현재 DB 진행 값을 복원. 과거 요청 결과의 JSON은 현재 값으로 덮어쓰지 않음 |
+
+`StateVersion`은 requestId나 참가자 명령 순번과 다른 값이다. 예를 들어 생성 1 → 시작 2 → 완료 3이 되지만, 중간의 조회·거부·같은 요청 재전송은 값을 올리지 않는다. 저장 실패하면 메모리와 DB 모두 이전 버전에 머문다. `EnemyAttackSequence`는 실제 반격 전까지 0을 유지한다.
+
+`AddGameRoomWaveState` Migration:
+
+- 중간 참가자 단계에서 생긴 InGame 방도 전환 전에 차단한다. 진행 중인 게임을 1웨이브로 임의 초기화하지 않는다.
+- 참가자 네 행과 호환 배열의 순서가 일치하는지도 먼저 검사한다.
+- 기존 Ready에는 MaxWaves=3, 기존 Completed에는 MaxWaves=0을 부여한다. 과거 완료 방의 웨이브 0·적 체력 0은 상세가 없다는 표식이다.
+- 기존 행의 StateVersion=1은 전환 시점의 출발점이며 과거 명령 횟수를 추정한 값이 아니다. 과거 응답 JSON에 없는 StateVersion은 읽을 때 0이며 이를 현재 DB 버전으로 다시 쓰지 않는다.
+- 규칙 버전·보상·결과·시각·참가자 상태·요청 이력은 바꾸지 않는다. 새 열의 임시 DB 기본값은 Backfill 뒤 제거한다.
+- CHECK로 생명주기와 웨이브 형태, 체력 범위, 양수 상태 버전, 0 이상 반격 순번을 제한한다.
+
+중요한 단계 경계: 현재 Complete는 관리자 전용 진단 경로이므로 첫 웨이브 도중 Victory를 지정하는 기존 테스트가 가능하다. 이것은 자동 전투 승리 판정을 구현했다는 뜻이 아니다. `Victory이면 마지막 웨이브의 적 체력 0`이라는 최종 규칙은 공격·완료 경로를 전환할 때 적용한다. 현재 완료 결과에 맞춰 가짜 전투 기록을 생성하지 않는다. 연결 유효성 검사도 아직 연결 단계에 남아 있다.
+
+구현 후 다음 단계는 공격·스킬과 서버 시각 기반 쿨다운·명령 순번 검증, 실제 피해·반격·다음 웨이브 전환이다. 개발 DB 적용과 구현 커밋은 아래 기록대로 완료했으며, 원격 푸시는 별도 진행한다.
+
+검증 결과: 규칙 단위 테스트 9개와 웨이브·버전·DB 제약·Migration 통합 테스트 13개를 추가했다. 총 단위 64개 + 통합 107개 = 171개 통과. 기존 저장 실패 테스트에도 버전·웨이브·적 체력 원복 검증을 덧붙였다. EF Core 모델과 Migration 스냅샷의 일치도 확인했다. 이 결과는 자동 전투 판정이나 재접속 기능의 완료를 뜻하지 않는다.
+
+### 13.8 개발 DB 적용 및 커밋 기록 — 2026-09-10
+
+- 구현 커밋: `c63c054` — 게임 방 요청 이력 증분 저장과 참가자 웨이브 상태 영속화 구현
+- 대상: 로컬 PostgreSQL `localhost:15432/coopgame`. 적용 전 API·Silo 프로세스가 실행되지 않았고, 게임 방 및 InGame 방은 0건이었다.
+- 적용 전 `pg_dump -Fc`로 Custom Format(복원용 전용 형식) 백업을 생성하고 `pg_restore --list`로 목록을 확인했다. 실제 복원 시험을 수행한 것은 아니다.
+- 백업은 Git 저장소 밖의 `%LOCALAPPDATA%/CoopGameServer/Backups`에 보관했다. 파일명은 `before-player-wave-20260910-084650.dump`이며 개발 데이터가 포함되므로 Git에 추가하지 않는다.
+- `dotnet ef database update`로 `20260909183928_AddGameRoomPlayerState`, `20260909192829_AddGameRoomWaveState`를 순서대로 적용했다. 이 명령은 아직 적용하지 않은 DB 구조 변경을 실행하고 이력 테이블에 기록한다.
+- 적용 뒤 마이그레이션 이력, `game_room_players`의 키·제약, 방의 새 열 7개를 확인했다. 방 데이터는 여전히 0건이다. 실제 과거 방 데이터 변환의 보존 검증은 앞서 수행한 통합 테스트 결과를 근거로 한다.
+- 이번 정리는 API·Silo를 재기동하거나 새 게임 방을 생성하는 수동 기능 검증까지 포함하지 않는다. 다음 기능 작업에서 기동 후 확인한다.
 
 ## 14. DB 저장과 메모리 반영 순서
 
@@ -551,10 +625,27 @@ Backfill(백필, 새 열에 기존 행의 값을 채우는 작업) 없이 `Outco
 
 이 순서는 DB 저장에 실패했는데 메모리에서만 적 체력이 줄어드는 문제를 막는다.
 
-3주차 구현처럼 매 명령마다 현재 방의 모든 `game_room_requests`를 삭제하고 다시 삽입하지 않는다.
-전투 명령이 누적될수록 전체 삭제·재삽입은 쓰기량이 제곱으로 증가하고 요청 이력을 불필요하게 잠그기 때문이다.
+요청 증분 저장은 이번 선행 작업에서 반영했다. `PersistCandidateStateAsync(candidateState, requestId)`는 현재 상태에 없고 후보에 새로 추가된 요청만 저장한다. 도메인 거부 결과도 최초 한 건은 저장하지만 키 충돌·재전송은 기존 행을 수정하지 않는다.
+
+전체 삭제·재삽입을 제거해 N개 명령에 대한 요청 행 누적 쓰기를 대략 N건으로 줄인다. 다만 `GameRoomState.Clone()`의 전체 메모리 복사와 활성화 시 전체 이력 조회는 유지하므로 전체 처리 비용이 상수 시간이 됐다는 뜻은 아니다. 이력 보관 기간·대용량 메모리 최적화는 별도 개선 대상이다.
+
+### 14.1 증분 저장 선행 작업 검증 — 2026-09-08
+
+[GameRoomRequestPersistenceTests](../../tests/CoopGameServer.IntegrationTests/Grains/GameRooms/GameRoomRequestPersistenceTests.cs)에 다음 다섯 통합 테스트를 추가했다.
+
+1. Create·Start·Complete마다 한 행만 추가되고 과거 행이 유지된다. JSON 값뿐 아니라 PostgreSQL의 `xmin`(행 버전을 만든 트랜잭션 번호)도 비교해 같은 내용의 삭제·재삽입을 검출한다.
+2. 같은 요청 재생과 다른 내용의 키 충돌이 최초 기록을 바꾸지 않는다.
+3. 방 생성 전 거부 결과가 방 생성 및 Silo 재시작 후에도 최초 실패로 재생된다.
+4. 빈 키·null 배정처럼 저장하지 않는 입력은 요청 행을 만들지 않는다.
+5. 테스트 전용 DB 키 충돌로 저장을 실패시키면 방 DB·메모리는 기존 상태를 유지하고, 장애 제거 후 같은 키로 다시 성공한다.
+
+검증 결과: Release 빌드 경고·오류 0개, 단위 테스트 55개와 통합 테스트 81개(총 136개) 통과, 변경 C# 파일의 서식 검사 통과. 개발 DB의 Migration·데이터는 변경하지 않았다.
+
+장애 주입 중 기존 한계도 확인했다. `PostgresException`을 포함한 DB 예외를 Orleans가 클라이언트로 직렬화하지 못해 `CodecNotFoundException`으로 전달한다. 위 테스트는 특정 예외 타입이 아니라 실패·원복·재시도 결과를 검증한다. 서버 내부 DB 오류를 안정적인 외부 오류 계약으로 변환하는 처리는 이번 저장 최적화와 분리된 후속 개선 항목이다.
 
 ## 15. 게임 완료 후 외부 처리 순서
+
+아래는 향후 전투 완료 후처리의 목표 설계다. 현재는 보상 전달의 Pending/재시도와 자동 복구까지 구현됐고, Party·Ticket 후처리를 DB 상태로 저장해 이 메서드에서 통합 재개하는 부분은 아직 미구현이다.
 
 Victory·Defeat·Cancelled 판정 시 다음 순서를 사용한다.
 
@@ -623,9 +714,10 @@ Orleans Serializer(직렬화기, 객체를 전송 가능한 데이터로 바꾸�
 - `(room_id, request_id)` 중복 제약
 - 승인 명령만 적용되는 `(room_id, player_id, accepted_command_sequence)` 부분 고유 인덱스
 - BasicAttack·UseSkill payload CHECK와 허용하지 않은 command_kind 거부
-- 기존 Ready·InGame·Completed 각각에 정확히 네 Player 행 생성
-- 기존 Ready의 initial deadline과 기존 InGame 변환 행의 completed_at Backfill
-- LegacyMigration terminal Room의 정책 버전·결정적 reward_request_id·네 Pending 결과 생성
+- 기존 Ready·Completed에 정확히 네 Player 행 생성, 전투 상세 없는 InGame 존재 시 전환 차단
+- 기존 Ready의 최초 접속 유예 초기화, 과거 Completed의 승패·시각·보상 정책 보존
+- Applied·NoReward·TerminalFailure 및 PendingRetry의 보상 ID·시도 횟수·재시도 시각 원형 보존
+- 버전 0 과거 완료 방 읽기 호환과 전투·재접속 거부
 - 요청 한 건 처리 시 기존 요청 행을 삭제하지 않고 한 행만 추가
 
 ### 17.3 전체 흐름 테스트
