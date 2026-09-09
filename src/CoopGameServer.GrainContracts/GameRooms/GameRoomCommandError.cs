@@ -47,4 +47,7 @@ public enum GameRoomCommandError
 
     /// <summary>완료 결과가 Victory·Defeat·Cancelled 중 하나가 아닙니다.</summary>
     InvalidOutcome = 14,
+
+    /// <summary>상태 버전이 long의 최댓값에 도달하여 더 증가시킬 수 없습니다.</summary>
+    StateVersionExhausted = 15,
 }

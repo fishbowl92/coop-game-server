@@ -3,6 +3,7 @@ using System;
 using CoopGameServer.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -11,9 +12,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace CoopGameServer.Persistence.Migrations
 {
     [DbContext(typeof(GameDbContext))]
-    partial class GameDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260909183928_AddGameRoomPlayerState")]
+    partial class AddGameRoomPlayerState
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -328,29 +331,9 @@ namespace CoopGameServer.Persistence.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at");
 
-                    b.Property<int>("CurrentWave")
-                        .HasColumnType("integer")
-                        .HasColumnName("current_wave");
-
-                    b.Property<long>("EnemyAttackSequence")
-                        .HasColumnType("bigint")
-                        .HasColumnName("enemy_attack_sequence");
-
-                    b.Property<int>("EnemyCurrentHealth")
-                        .HasColumnType("integer")
-                        .HasColumnName("enemy_current_health");
-
-                    b.Property<int>("EnemyMaxHealth")
-                        .HasColumnType("integer")
-                        .HasColumnName("enemy_max_health");
-
                     b.Property<int>("Lifecycle")
                         .HasColumnType("integer")
                         .HasColumnName("lifecycle");
-
-                    b.Property<int>("MaxWaves")
-                        .HasColumnType("integer")
-                        .HasColumnName("max_waves");
 
                     b.Property<int>("Outcome")
                         .HasColumnType("integer")
@@ -380,10 +363,6 @@ namespace CoopGameServer.Persistence.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("started_at");
 
-                    b.Property<long>("StateVersion")
-                        .HasColumnType("bigint")
-                        .HasColumnName("state_version");
-
                     b.HasKey("RoomId");
 
                     b.HasIndex("QueueKey", "Lifecycle", "CreatedAt")
@@ -392,10 +371,6 @@ namespace CoopGameServer.Persistence.Migrations
                     b.ToTable("game_rooms", null, t =>
                         {
                             t.HasCheckConstraint("CK_game_rooms_combat_rule_version", "combat_rule_version > 0 OR (combat_rule_version = 0 AND lifecycle = 2)");
-
-                            t.HasCheckConstraint("CK_game_rooms_enemy_attack_sequence", "enemy_attack_sequence >= 0");
-
-                            t.HasCheckConstraint("CK_game_rooms_enemy_health", "enemy_max_health >= 0 AND enemy_current_health BETWEEN 0 AND enemy_max_health");
 
                             t.HasCheckConstraint("CK_game_rooms_four_players", "cardinality(player_ids) = 4");
 
@@ -410,10 +385,6 @@ namespace CoopGameServer.Persistence.Migrations
                             t.HasCheckConstraint("CK_game_rooms_party_count", "cardinality(party_ids) <= 4");
 
                             t.HasCheckConstraint("CK_game_rooms_reward_policy_version_positive", "reward_policy_version > 0");
-
-                            t.HasCheckConstraint("CK_game_rooms_state_version", "state_version > 0");
-
-                            t.HasCheckConstraint("CK_game_rooms_wave_state", "(lifecycle = 0 AND max_waves = 3 AND current_wave = 0 AND enemy_max_health = 0 AND enemy_current_health = 0 AND enemy_attack_sequence = 0) OR (lifecycle IN (1, 2) AND combat_rule_version > 0 AND max_waves = 3 AND current_wave BETWEEN 1 AND 3 AND enemy_max_health > 0) OR (lifecycle = 2 AND max_waves = 0 AND current_wave = 0 AND enemy_max_health = 0 AND enemy_current_health = 0 AND enemy_attack_sequence = 0)");
                         });
                 });
 

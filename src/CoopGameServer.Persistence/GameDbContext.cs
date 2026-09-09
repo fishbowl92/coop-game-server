@@ -76,6 +76,9 @@ public sealed class GameDbContext : DbContext
     /// <summary>game_rooms 테이블에 대응하는 게임 방 현재 상태 집합입니다.</summary>
     public DbSet<GameRoomRecord> GameRooms => Set<GameRoomRecord>();
 
+    /// <summary>게임 방별 참가자 전투 상태입니다. 동일 트랜잭션에서 정확히 네 행을 저장합니다.</summary>
+    public DbSet<GameRoomPlayerRecord> GameRoomPlayers => Set<GameRoomPlayerRecord>();
+
     /// <summary>game_room_requests 테이블에 대응하는 게임 방 명령 처리 기록 집합입니다.</summary>
     public DbSet<GameRoomRequestRecord> GameRoomRequests => Set<GameRoomRequestRecord>();
 
@@ -507,6 +510,21 @@ public sealed class GameDbContext : DbContext
             table =>
             {
                 table.HasCheckConstraint("CK_game_rooms_lifecycle", "lifecycle IN (0, 1, 2)");
+                table.HasCheckConstraint("CK_game_rooms_state_version", "state_version > 0");
+                table.HasCheckConstraint("CK_game_rooms_enemy_attack_sequence", "enemy_attack_sequence >= 0");
+                table.HasCheckConstraint("CK_game_rooms_enemy_health",
+                    "enemy_max_health >= 0 AND enemy_current_health BETWEEN 0 AND enemy_max_health");
+                // 과거 완료 방은 전투 과정을 알 수 없어 max_waves=0으로 보존합니다.
+                // 기존 관리자 Complete 경로가 남아 있어 Victory와 마지막 웨이브의 연계는 공격 구현 시 추가합니다.
+                table.HasCheckConstraint("CK_game_rooms_wave_state",
+                    "(lifecycle = 0 AND max_waves = 3 AND current_wave = 0 "
+                    + "AND enemy_max_health = 0 AND enemy_current_health = 0 AND enemy_attack_sequence = 0) OR "
+                    + "(lifecycle IN (1, 2) AND combat_rule_version > 0 AND max_waves = 3 "
+                    + "AND current_wave BETWEEN 1 AND 3 AND enemy_max_health > 0) OR "
+                    + "(lifecycle = 2 AND max_waves = 0 AND current_wave = 0 "
+                    + "AND enemy_max_health = 0 AND enemy_current_health = 0 AND enemy_attack_sequence = 0)");
+                table.HasCheckConstraint("CK_game_rooms_combat_rule_version",
+                    "combat_rule_version > 0 OR (combat_rule_version = 0 AND lifecycle = 2)");
                 table.HasCheckConstraint("CK_game_rooms_outcome", "outcome IN (0, 1, 2, 3)");
                 table.HasCheckConstraint(
                     "CK_game_rooms_reward_policy_version_positive",
@@ -558,8 +576,42 @@ public sealed class GameDbContext : DbContext
         room.Property(entity => entity.RewardPolicyVersion)
             .HasColumnName("reward_policy_version")
             .IsRequired();
+        room.Property(entity => entity.CombatRuleVersion)
+            .HasColumnName("combat_rule_version")
+            .IsRequired();
+        room.Property(entity => entity.CurrentWave).HasColumnName("current_wave");
+        room.Property(entity => entity.MaxWaves).HasColumnName("max_waves");
+        room.Property(entity => entity.EnemyMaxHealth).HasColumnName("enemy_max_health");
+        room.Property(entity => entity.EnemyCurrentHealth).HasColumnName("enemy_current_health");
+        room.Property(entity => entity.StateVersion).HasColumnName("state_version");
+        room.Property(entity => entity.EnemyAttackSequence).HasColumnName("enemy_attack_sequence");
         room.HasIndex(entity => new { entity.QueueKey, entity.Lifecycle, entity.CreatedAt })
             .HasDatabaseName("IX_game_rooms_queue_key_lifecycle_created_at");
+
+        // 참가자 정본은 이 네 행입니다. player_ids 배열은 기존 호출자 호환을 위해 함께 검증합니다.
+        var participant = modelBuilder.Entity<GameRoomPlayerRecord>();
+        participant.ToTable("game_room_players", table =>
+        {
+            table.HasCheckConstraint("CK_game_room_players_order", "player_order BETWEEN 0 AND 3");
+            table.HasCheckConstraint("CK_game_room_players_health",
+                "max_health > 0 AND current_health BETWEEN 0 AND max_health");
+            table.HasCheckConstraint("CK_game_room_players_combat_status",
+                "(current_health > 0 AND combat_status = 0) OR (current_health = 0 AND combat_status = 1)");
+            table.HasCheckConstraint("CK_game_room_players_sequence", "last_command_sequence >= 0");
+        });
+        participant.HasKey(entity => new { entity.RoomId, entity.PlayerId });
+        participant.Property(entity => entity.RoomId).HasColumnName("room_id").ValueGeneratedNever();
+        participant.Property(entity => entity.PlayerId).HasColumnName("player_id").ValueGeneratedNever();
+        participant.Property(entity => entity.PlayerOrder).HasColumnName("player_order");
+        participant.Property(entity => entity.MaxHealth).HasColumnName("max_health");
+        participant.Property(entity => entity.CurrentHealth).HasColumnName("current_health");
+        participant.Property(entity => entity.CombatStatus).HasColumnName("combat_status");
+        participant.Property(entity => entity.LastCommandSequence).HasColumnName("last_command_sequence");
+        participant.Property(entity => entity.BasicAttackReadyAt).HasColumnName("basic_attack_ready_at");
+        participant.Property(entity => entity.SkillReadyAt).HasColumnName("skill_ready_at");
+        participant.HasIndex(entity => new { entity.RoomId, entity.PlayerOrder }).IsUnique();
+        participant.HasOne<GameRoomRecord>().WithMany().HasForeignKey(entity => entity.RoomId)
+            .OnDelete(DeleteBehavior.Cascade);
 
         var request = modelBuilder.Entity<GameRoomRequestRecord>();
 

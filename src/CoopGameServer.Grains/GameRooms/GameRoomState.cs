@@ -1,3 +1,4 @@
+using CoopGameServer.Domain.GameRooms;
 using CoopGameServer.GrainContracts.GameRooms;
 using CoopGameServer.GrainContracts.Matchmaking;
 using CoopGameServer.GrainContracts.Parties;
@@ -22,6 +23,12 @@ internal sealed class GameRoomState
     /// 방 생성 뒤에는 값을 바꾸지 않아야 같은 경기 결과를 언제 처리해도 같은 정책을 선택할 수 있습니다.
     /// </summary>
     internal const int CurrentRewardPolicyVersion = 1;
+
+    /// <summary>현재 새 방이 사용하는 참가자 전투 상태 규칙 버전입니다.</summary>
+    internal const int CurrentCombatRuleVersion = GameRoomCombatRules.CurrentVersion;
+
+    /// <summary>버전 1 참가자의 초기 체력입니다. 실제 공격 처리는 후속 단계에서 추가합니다.</summary>
+    internal const int InitialPlayerHealth = GameRoomCombatRules.InitialPlayerHealth;
 
     private readonly Dictionary<Guid, GameRoomStoredRequest> _requests = [];
     private GameRoomSnapshot? _room;
@@ -50,13 +57,20 @@ internal sealed class GameRoomState
     /// <summary>현재 방 상태의 방어적 복사본을 반환합니다.</summary>
     internal GameRoomSnapshot? Get() => CloneSnapshot(_room);
 
-    /// <summary>PostgreSQL 동기화에 사용할 멱등성 요청 기록의 복사본을 반환합니다.</summary>
+    /// <summary>후보 상태 복제에 사용할 전체 멱등성 요청 기록의 복사본을 반환합니다.</summary>
     internal GameRoomStoredRequest[] GetStoredRequests()
     {
         return _requests.Values
             .OrderBy(request => request.CreatedAt)
             .Select(request => request.Copy())
             .ToArray();
+    }
+
+    /// <summary>이번에 저장할 요청 한 건을 사전에서 찾고, 내부 배열까지 분리한 복사본을 반환합니다.</summary>
+    /// <param name="requestId">찾을 요청 식별자입니다. 존재하지 않으면 null을 반환합니다.</param>
+    internal GameRoomStoredRequest? GetStoredRequest(Guid requestId)
+    {
+        return _requests.TryGetValue(requestId, out var request) ? request.Copy() : null;
     }
 
     /// <summary>매칭 결과의 방 키·파티·4인 참가자 구성을 검증하고 Ready 방을 만듭니다.</summary>
@@ -105,7 +119,13 @@ internal sealed class GameRoomState
             StartedAt: null,
             CompletedAt: null,
             Outcome: GameOutcome.None,
-            RewardPolicyVersion: CurrentRewardPolicyVersion);
+            RewardPolicyVersion: CurrentRewardPolicyVersion,
+            CombatRuleVersion: CurrentCombatRuleVersion,
+            Players: assignment.PlayerIds.Select((playerId, order) => new PlayerCombatSnapshot(
+                playerId, order, InitialPlayerHealth, InitialPlayerHealth,
+                PlayerCombatStatus.Active, 0, null, null)).ToArray(),
+            MaxWaves: GameRoomCombatRules.WaveCount,
+            StateVersion: 1);
 
         return StoreCreate(requestId, assignment, Success());
     }
@@ -144,12 +164,23 @@ internal sealed class GameRoomState
             return StoreSimple(requestId, GameRoomCommandKind.Start, Failure(lifecycleError));
         }
 
+        if (_room.StateVersion == long.MaxValue)
+        {
+            return StoreSimple(requestId, GameRoomCommandKind.Start, Failure(GameRoomCommandError.StateVersionExhausted));
+        }
+
+        // 웨이브 설정은 생성 시 고정된 버전으로 선택합니다. 참가자 체력·쿨다운을 다시 초기화하지 않습니다.
+        var firstWave = GameRoomCombatRules.GetWave(_room.CombatRuleVersion, 1);
         _room = _room with
         {
             Lifecycle = GameRoomLifecycle.InGame,
             PartyIds = _room.PartyIds.ToArray(),
             PlayerIds = _room.PlayerIds.ToArray(),
             StartedAt = startedAt,
+            CurrentWave = firstWave.WaveNumber,
+            EnemyMaxHealth = firstWave.EnemyMaxHealth,
+            EnemyCurrentHealth = firstWave.EnemyMaxHealth,
+            StateVersion = checked(_room.StateVersion + 1),
         };
 
         return StoreSimple(requestId, GameRoomCommandKind.Start, Success());
@@ -197,6 +228,11 @@ internal sealed class GameRoomState
             return StoreComplete(requestId, outcome, Failure(lifecycleError));
         }
 
+        if (_room.StateVersion == long.MaxValue)
+        {
+            return StoreComplete(requestId, outcome, Failure(GameRoomCommandError.StateVersionExhausted));
+        }
+
         _room = _room with
         {
             Lifecycle = GameRoomLifecycle.Completed,
@@ -204,6 +240,8 @@ internal sealed class GameRoomState
             PlayerIds = _room.PlayerIds.ToArray(),
             CompletedAt = completedAt,
             Outcome = outcome,
+            // 현재 관리자용 결과 지정 경로입니다. 적 체력이나 웨이브를 조작하여 승리를 꾸미지 않습니다.
+            StateVersion = checked(_room.StateVersion + 1),
         };
 
         return StoreComplete(requestId, outcome, Success());
@@ -396,6 +434,8 @@ internal sealed class GameRoomState
             {
                 PartyIds = room.PartyIds.ToArray(),
                 PlayerIds = room.PlayerIds.ToArray(),
+                // 참가자 레코드의 필드는 불변 값이므로 배열만 분리하면 내부 상태를 보호할 수 있습니다.
+                Players = room.Players?.ToArray(),
             };
     }
 }

@@ -53,8 +53,18 @@ public sealed class GameRoomGrain(
             .OrderBy(request => request.CreatedAt)
             .ToArrayAsync(cancellationToken);
 
+        var participants = await gameDbContext.GameRoomPlayers.AsNoTracking()
+            .Where(player => player.RoomId == roomId)
+            .OrderBy(player => player.PlayerOrder)
+            .ToArrayAsync(cancellationToken);
+        var restoredSnapshot = roomRecord is null ? null : RestoreSnapshot(roomRecord, participants);
+        if (restoredSnapshot is not null)
+        {
+            ValidateParticipants(restoredSnapshot);
+        }
+
         _state = GameRoomState.Restore(
-            roomRecord is null ? null : RestoreSnapshot(roomRecord),
+            restoredSnapshot,
             requestRecords.Select(RestoreStoredRequest));
 
         await base.OnActivateAsync(cancellationToken);
@@ -72,7 +82,7 @@ public sealed class GameRoomGrain(
             return result;
         }
 
-        await PersistCandidateStateAsync(candidateState);
+        await PersistCandidateStateAsync(candidateState, requestId);
         return result;
     }
 
@@ -106,7 +116,7 @@ public sealed class GameRoomGrain(
             }
         }
 
-        await PersistCandidateStateAsync(candidateState);
+        await PersistCandidateStateAsync(candidateState, requestId);
         return result;
     }
 
@@ -148,7 +158,7 @@ public sealed class GameRoomGrain(
             }
         }
 
-        await PersistCandidateStateAsync(candidateState);
+        await PersistCandidateStateAsync(candidateState, requestId);
 
         if (result.Error is GameRoomCommandError.None)
         {
@@ -502,20 +512,34 @@ public sealed class GameRoomGrain(
         return new Guid(hash.AsSpan(0, 16));
     }
 
-    /// <summary>후보 방 상태와 요청 결과를 하나의 PostgreSQL 트랜잭션으로 저장합니다.</summary>
-    private async Task PersistCandidateStateAsync(GameRoomState candidateState)
+    /// <summary>후보 방 상태와 이번에 새로 만든 요청 결과 한 건을 같은 트랜잭션으로 저장합니다.</summary>
+    /// <param name="candidateState">명령을 적용했지만 아직 확정하지 않은 메모리 복사본입니다.</param>
+    /// <param name="requestId">이번 명령의 식별자입니다. 과거 요청 전체를 다시 저장하지 않고 이 기록만 찾습니다.</param>
+    private async Task PersistCandidateStateAsync(GameRoomState candidateState, Guid requestId)
     {
+        // 같은 키의 다른 명령은 충돌 응답일 뿐 새 기록이 아닙니다. 최초 결과를 덮어쓰면 안 됩니다.
+        // null 배정 정보처럼 상태 규칙에서 기록하지 않는 입력 역시 DB 쓰기를 발생시키지 않습니다.
+        if (_state.GetStoredRequest(requestId) is not null
+            || candidateState.GetStoredRequest(requestId) is not { } newRequest)
+        {
+            return;
+        }
+
         await using var gameDbContext = await dbContextFactory.CreateDbContextAsync();
         await using var transaction = await gameDbContext.Database.BeginTransactionAsync();
 
         await SynchronizeStateAsync(gameDbContext, this.GetPrimaryKey(), candidateState);
+        // Append-only(추가 전용): 이미 확정된 요청 행은 삭제·갱신하지 않습니다.
+        // 예상하지 못한 DB 키 충돌도 삭제로 우회하지 않고 트랜잭션 실패로 드러냅니다.
+        gameDbContext.GameRoomRequests.Add(CreateRequestRecord(this.GetPrimaryKey(), newRequest));
         await gameDbContext.SaveChangesAsync();
         await transaction.CommitAsync();
 
+        // 방 상태와 요청 결과가 모두 저장된 뒤에만 후보를 채택합니다. 실패하면 기존 메모리가 유지됩니다.
         _state = candidateState;
     }
 
-    /// <summary>현재 roomId의 방 한 행과 전체 멱등성 요청 기록을 후보 상태로 맞춥니다.</summary>
+    /// <summary>현재 roomId의 방 상태와 필요한 결과 전달 행을 후보 상태로 맞춥니다.</summary>
     private static async Task SynchronizeStateAsync(
         GameDbContext gameDbContext,
         Guid roomId,
@@ -544,7 +568,10 @@ public sealed class GameRoomGrain(
                 snapshot.StartedAt,
                 snapshot.CompletedAt,
                 (int)snapshot.Outcome,
-                snapshot.RewardPolicyVersion));
+                snapshot.RewardPolicyVersion,
+                snapshot.CombatRuleVersion,
+                snapshot.CurrentWave, snapshot.MaxWaves, snapshot.EnemyMaxHealth,
+                snapshot.EnemyCurrentHealth, snapshot.StateVersion, snapshot.EnemyAttackSequence));
         }
         else
         {
@@ -555,23 +582,82 @@ public sealed class GameRoomGrain(
                 snapshot.StartedAt,
                 snapshot.CompletedAt,
                 (int)snapshot.Outcome);
+            existingRoom.UpdateCombatProgress(snapshot.CurrentWave, snapshot.MaxWaves,
+                snapshot.EnemyMaxHealth, snapshot.EnemyCurrentHealth, snapshot.StateVersion, snapshot.EnemyAttackSequence);
         }
 
         // 방 완료와 네 플레이어의 결과 전달 대기 행은 반드시 같은 Transaction으로 저장합니다.
         // 방만 Completed가 되고 결과 행이 빠지면 이후 복구 서비스가 전달 대상을 찾을 수 없습니다.
         if (snapshot is not null)
         {
+            await SynchronizeParticipantsAsync(gameDbContext, snapshot, existingRoom is null);
             await SynchronizeGameResultsAsync(gameDbContext, snapshot);
         }
+    }
 
-        await gameDbContext.GameRoomRequests
-            .Where(request => request.RoomId == roomId)
-            .ExecuteDeleteAsync();
+    /// <summary>새 방에는 네 참가자를 추가하고, 기존 방은 구성 검증 후 바뀐 값만 저장합니다.</summary>
+    private static async Task SynchronizeParticipantsAsync(
+        GameDbContext context, GameRoomSnapshot snapshot, bool isNewRoom)
+    {
+        var players = ValidateParticipants(snapshot);
+        var records = await context.GameRoomPlayers
+            .Where(player => player.RoomId == snapshot.RoomId)
+            .OrderBy(player => player.PlayerOrder)
+            .ToArrayAsync();
 
-        foreach (var storedRequest in state.GetStoredRequests())
+        if (isNewRoom)
         {
-            gameDbContext.GameRoomRequests.Add(CreateRequestRecord(roomId, storedRequest));
+            if (records.Length != 0)
+            {
+                throw new InvalidOperationException("새 방에 기존 참가자 행이 존재합니다.");
+            }
+
+            foreach (var player in players)
+            {
+                context.GameRoomPlayers.Add(new GameRoomPlayerRecord(snapshot.RoomId,
+                    player.PlayerId, player.PlayerOrder, player.MaxHealth, player.CurrentHealth,
+                    (int)player.CombatStatus, player.LastAcceptedCommandSequence,
+                    player.BasicAttackReadyAt, player.SkillReadyAt));
+            }
+
+            return;
         }
+
+        if (records.Length != players.Length
+            || !records.Select(record => record.PlayerId).SequenceEqual(snapshot.PlayerIds)
+            || !records.Select(record => record.PlayerOrder).SequenceEqual(Enumerable.Range(0, 4)))
+        {
+            // 누락된 행을 조용히 새 체력으로 복원하면 진행 상태를 잃습니다. 불일치는 저장 실패로 드러냅니다.
+            throw new InvalidOperationException("저장된 방 참가자 구성 또는 순서가 후보 상태와 다릅니다.");
+        }
+
+        foreach (var player in players)
+        {
+            records[player.PlayerOrder].Update(player.MaxHealth, player.CurrentHealth,
+                (int)player.CombatStatus, player.LastAcceptedCommandSequence,
+                player.BasicAttackReadyAt, player.SkillReadyAt);
+        }
+    }
+
+    /// <summary>참가자 정본과 호환 배열이 순서까지 같은 정확히 네 명인지 검사합니다.</summary>
+    private static PlayerCombatSnapshot[] ValidateParticipants(GameRoomSnapshot snapshot)
+    {
+        var players = snapshot.Players;
+        if (players is null || players.Length != GameRoomState.TargetPlayerCount
+            || players.Select(player => player.PlayerId).Distinct().Count() != GameRoomState.TargetPlayerCount
+            || !players.Select(player => player.PlayerId).SequenceEqual(snapshot.PlayerIds)
+            || !players.Select(player => player.PlayerOrder).SequenceEqual(Enumerable.Range(0, 4)))
+        {
+            throw new InvalidOperationException("방 참가자는 배정 순서가 일치하는 네 명이어야 합니다.");
+        }
+
+        if (snapshot.CombatRuleVersion is not (0 or GameRoomState.CurrentCombatRuleVersion)
+            || (snapshot.CombatRuleVersion == 0 && snapshot.Lifecycle != GameRoomLifecycle.Completed))
+        {
+            throw new InvalidOperationException("복원할 수 없는 전투 규칙 버전 또는 과거 방 상태입니다.");
+        }
+
+        return players;
     }
 
     /// <summary>
@@ -719,7 +805,7 @@ public sealed class GameRoomGrain(
     }
 
     /// <summary>PostgreSQL 행을 Orleans가 반환할 읽기 전용 방 스냅샷으로 바꿉니다.</summary>
-    private static GameRoomSnapshot RestoreSnapshot(GameRoomRecord record)
+    private static GameRoomSnapshot RestoreSnapshot(GameRoomRecord record, GameRoomPlayerRecord[] participants)
     {
         return new GameRoomSnapshot(
             record.RoomId,
@@ -731,7 +817,13 @@ public sealed class GameRoomGrain(
             record.StartedAt,
             record.CompletedAt,
             (GameOutcome)record.Outcome,
-            record.RewardPolicyVersion);
+            record.RewardPolicyVersion,
+            record.CombatRuleVersion,
+            participants.Select(player => new PlayerCombatSnapshot(player.PlayerId, player.PlayerOrder,
+                player.MaxHealth, player.CurrentHealth, (PlayerCombatStatus)player.CombatStatus,
+                player.LastCommandSequence, player.BasicAttackReadyAt, player.SkillReadyAt)).ToArray(),
+            record.CurrentWave, record.MaxWaves, record.EnemyMaxHealth,
+            record.EnemyCurrentHealth, record.StateVersion, record.EnemyAttackSequence);
     }
 
     /// <summary>Complete 명령의 멱등성 비교를 위해 JSON에 저장하는 최소 요청 원문입니다.</summary>
