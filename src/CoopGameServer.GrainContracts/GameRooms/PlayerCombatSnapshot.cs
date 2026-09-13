@@ -18,7 +18,8 @@ public sealed record PlayerCombatSnapshot(
     [property: Id(4)] PlayerCombatStatus CombatStatus,
     [property: Id(5)] long LastAcceptedCommandSequence,
     [property: Id(6)] DateTimeOffset? BasicAttackReadyAt,
-    [property: Id(7)] DateTimeOffset? SkillReadyAt);
+    [property: Id(7)] DateTimeOffset? SkillReadyAt,
+    [property: Id(8)] string ConnectionStatus = "AwaitingConnection");
 
 /// <summary>체력에 따른 전투 가능 여부입니다. 접속 상태와는 별개입니다.</summary>
 public enum PlayerCombatStatus

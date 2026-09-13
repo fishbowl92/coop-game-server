@@ -88,6 +88,22 @@ public sealed class GameRoomRecord
     /// <summary>실제 적 반격 횟수입니다. 일반 상태 변경으로 증가시키지 않습니다.</summary>
     public long EnemyAttackSequence { get; private set; }
 
+    /// <summary>새 전투 완료 후 파티·티켓 복귀가 아직 끝나지 않았는지 나타냅니다. 과거 완료 기록은 false로 유지합니다.</summary>
+    public bool FinalizationPending { get; private set; }
+    /// <summary>최초 입장 마감입니다. 재시작이나 Heartbeat로 연장하지 않습니다.</summary>
+    public DateTimeOffset? InitialConnectDeadline { get; private set; }
+    /// <summary>시작 전 취소 사유입니다. 추측한 승패를 저장하지 않습니다.</summary>
+    public string? CancellationReason { get; private set; }
+
+    public void UpdateConnectionLifecycle(DateTimeOffset? deadline, string? reason)
+    {
+        InitialConnectDeadline = deadline;
+        CancellationReason = reason;
+    }
+
+    /// <summary>외부 후처리 진행 상태만 변경합니다. 전투 결과는 덮어쓰지 않습니다.</summary>
+    public void SetFinalizationPending(bool pending) => FinalizationPending = pending;
+
     /// <summary>후보 상태의 전투 진행 값만 반영합니다. 규칙·보상 버전과 과거 요청 결과는 변경하지 않습니다.</summary>
     /// <param name="currentWave">현재 웨이브입니다.</param>
     /// <param name="maxWaves">전체 웨이브 수입니다.</param>

@@ -511,6 +511,11 @@ public sealed class GameDbContext : DbContext
             {
                 table.HasCheckConstraint("CK_game_rooms_lifecycle", "lifecycle IN (0, 1, 2)");
                 table.HasCheckConstraint("CK_game_rooms_state_version", "state_version > 0");
+                table.HasCheckConstraint("CK_game_rooms_initial_connect_deadline",
+                    "lifecycle = 2 OR initial_connect_deadline IS NOT NULL");
+                table.HasCheckConstraint("CK_game_rooms_cancellation_reason",
+                    "cancellation_reason IS NULL OR (lifecycle = 2 AND outcome = 3 "
+                    + "AND started_at IS NULL AND cancellation_reason = 'InitialConnectionTimeout')");
                 table.HasCheckConstraint("CK_game_rooms_enemy_attack_sequence", "enemy_attack_sequence >= 0");
                 table.HasCheckConstraint("CK_game_rooms_enemy_health",
                     "enemy_max_health >= 0 AND enemy_current_health BETWEEN 0 AND enemy_max_health");
@@ -521,6 +526,7 @@ public sealed class GameDbContext : DbContext
                     + "AND enemy_max_health = 0 AND enemy_current_health = 0 AND enemy_attack_sequence = 0) OR "
                     + "(lifecycle IN (1, 2) AND combat_rule_version > 0 AND max_waves = 3 "
                     + "AND current_wave BETWEEN 1 AND 3 AND enemy_max_health > 0) OR "
+                    + "(lifecycle = 2 AND outcome = 3 AND started_at IS NULL AND max_waves = 3 AND current_wave = 0 AND enemy_max_health = 0 AND enemy_current_health = 0 AND enemy_attack_sequence = 0) OR "
                     + "(lifecycle = 2 AND max_waves = 0 AND current_wave = 0 "
                     + "AND enemy_max_health = 0 AND enemy_current_health = 0 AND enemy_attack_sequence = 0)");
                 table.HasCheckConstraint("CK_game_rooms_combat_rule_version",
@@ -535,13 +541,16 @@ public sealed class GameDbContext : DbContext
                     "CK_game_rooms_lifecycle_times",
                     "(lifecycle = 0 AND started_at IS NULL AND completed_at IS NULL) OR "
                     + "(lifecycle = 1 AND started_at IS NOT NULL AND completed_at IS NULL) OR "
-                    + "(lifecycle = 2 AND started_at IS NOT NULL AND completed_at IS NOT NULL)");
+                    + "(lifecycle = 2 AND completed_at IS NOT NULL AND (started_at IS NOT NULL OR outcome = 3))");
                 table.HasCheckConstraint(
                     "CK_game_rooms_lifecycle_outcome",
                     "(lifecycle IN (0, 1) AND outcome = 0) OR "
                     + "(lifecycle = 2 AND outcome IN (1, 2, 3))");
             });
         room.HasKey(entity => entity.RoomId);
+        room.Property(entity => entity.InitialConnectDeadline).HasColumnName("initial_connect_deadline");
+        room.Property(entity => entity.CancellationReason).HasColumnName("cancellation_reason").HasMaxLength(64);
+        room.HasIndex(entity => entity.InitialConnectDeadline).HasFilter("lifecycle = 0");
         room.Property(entity => entity.RoomId)
             .HasColumnName("room_id")
             .ValueGeneratedNever();
@@ -598,6 +607,8 @@ public sealed class GameDbContext : DbContext
             table.HasCheckConstraint("CK_game_room_players_combat_status",
                 "(current_health > 0 AND combat_status = 0) OR (current_health = 0 AND combat_status = 1)");
             table.HasCheckConstraint("CK_game_room_players_sequence", "last_command_sequence >= 0");
+            // NULL 비교가 UNKNOWN으로 통과하지 않도록 각 상태에서 필수 열을 명시합니다.
+            table.HasCheckConstraint("CK_game_room_players_connection", GameRoomConnectionSchema.CheckConstraint);
         });
         participant.HasKey(entity => new { entity.RoomId, entity.PlayerId });
         participant.Property(entity => entity.RoomId).HasColumnName("room_id").ValueGeneratedNever();
@@ -609,18 +620,38 @@ public sealed class GameDbContext : DbContext
         participant.Property(entity => entity.LastCommandSequence).HasColumnName("last_command_sequence");
         participant.Property(entity => entity.BasicAttackReadyAt).HasColumnName("basic_attack_ready_at");
         participant.Property(entity => entity.SkillReadyAt).HasColumnName("skill_ready_at");
+        participant.Property(entity => entity.ConnectionStatus).HasColumnName("connection_status").HasConversion<int>();
+        participant.Property(entity => entity.ConnectionId).HasColumnName("connection_id");
+        participant.Property(entity => entity.ConnectionGeneration).HasColumnName("connection_generation");
+        participant.Property(entity => entity.LastSeenAt).HasColumnName("last_seen_at");
+        participant.Property(entity => entity.LeaseExpiresAt).HasColumnName("lease_expires_at");
+        participant.Property(entity => entity.DisconnectedAt).HasColumnName("disconnected_at");
+        participant.Property(entity => entity.ReconnectDeadline).HasColumnName("reconnect_deadline");
+        participant.Property(entity => entity.AbandonedAt).HasColumnName("abandoned_at");
+        participant.HasIndex(entity => entity.LeaseExpiresAt).HasFilter("connection_status = 1");
+        participant.HasIndex(entity => entity.ReconnectDeadline).HasFilter("connection_status = 2");
         participant.HasIndex(entity => new { entity.RoomId, entity.PlayerOrder }).IsUnique();
         participant.HasOne<GameRoomRecord>().WithMany().HasForeignKey(entity => entity.RoomId)
             .OnDelete(DeleteBehavior.Cascade);
 
         var request = modelBuilder.Entity<GameRoomRequestRecord>();
+        modelBuilder.Entity<GameRoomRecord>().Property(room => room.FinalizationPending)
+            .HasColumnName("finalization_pending").HasDefaultValue(false);
 
         request.ToTable(
             "game_room_requests",
             table => table.HasCheckConstraint(
                 "CK_game_room_requests_payload_shape",
-                "(command_kind IN ('Create', 'Complete') AND request_payload_json IS NOT NULL) OR "
-                + "(command_kind = 'Start' AND request_payload_json IS NULL)"));
+                "(command_kind IN ('Create', 'Complete') AND request_payload_json IS NOT NULL AND player_id IS NULL AND accepted_command_sequence IS NULL) OR "
+                + "(command_kind = 'Start' AND request_payload_json IS NULL AND player_id IS NULL AND accepted_command_sequence IS NULL) OR "
+                + "(command_kind = 'Connection' AND request_payload_json IS NOT NULL AND player_id IS NOT NULL AND accepted_command_sequence IS NULL) OR "
+                + "(command_kind IN ('BasicAttack', 'UseSkill') AND request_payload_json IS NOT NULL AND player_id IS NOT NULL "
+                + "AND (accepted_command_sequence IS NULL OR accepted_command_sequence > 0))"));
+        request.Property(entity => entity.PlayerId).HasColumnName("player_id");
+        request.Property(entity => entity.AcceptedCommandSequence).HasColumnName("accepted_command_sequence");
+        // 거부 요청에는 승인 순번이 없으므로 재시도 가능한 같은 순번을 선점하지 않습니다.
+        request.HasIndex(entity => new { entity.RoomId, entity.PlayerId, entity.AcceptedCommandSequence })
+            .IsUnique().HasFilter("accepted_command_sequence IS NOT NULL");
         // GameRoom 명령의 멱등성 범위는 roomId입니다.
         // 따라서 같은 requestId라도 대상 방이 다르면 별개의 명령으로 저장합니다.
         request.HasKey(entity => new { entity.RoomId, entity.RequestId });

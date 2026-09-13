@@ -3,6 +3,7 @@ using System;
 using CoopGameServer.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -11,9 +12,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace CoopGameServer.Persistence.Migrations
 {
     [DbContext(typeof(GameDbContext))]
-    partial class GameDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260910204749_AddGameRoomFinalizationTracking")]
+    partial class AddGameRoomFinalizationTracking
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -265,10 +268,6 @@ namespace CoopGameServer.Persistence.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("player_id");
 
-                    b.Property<DateTimeOffset?>("AbandonedAt")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("abandoned_at");
-
                     b.Property<DateTimeOffset?>("BasicAttackReadyAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("basic_attack_ready_at");
@@ -277,37 +276,13 @@ namespace CoopGameServer.Persistence.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("combat_status");
 
-                    b.Property<long>("ConnectionGeneration")
-                        .HasColumnType("bigint")
-                        .HasColumnName("connection_generation");
-
-                    b.Property<Guid?>("ConnectionId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("connection_id");
-
-                    b.Property<int>("ConnectionStatus")
-                        .HasColumnType("integer")
-                        .HasColumnName("connection_status");
-
                     b.Property<int>("CurrentHealth")
                         .HasColumnType("integer")
                         .HasColumnName("current_health");
 
-                    b.Property<DateTimeOffset?>("DisconnectedAt")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("disconnected_at");
-
                     b.Property<long>("LastCommandSequence")
                         .HasColumnType("bigint")
                         .HasColumnName("last_command_sequence");
-
-                    b.Property<DateTimeOffset?>("LastSeenAt")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("last_seen_at");
-
-                    b.Property<DateTimeOffset?>("LeaseExpiresAt")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("lease_expires_at");
 
                     b.Property<int>("MaxHealth")
                         .HasColumnType("integer")
@@ -317,21 +292,11 @@ namespace CoopGameServer.Persistence.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("player_order");
 
-                    b.Property<DateTimeOffset?>("ReconnectDeadline")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("reconnect_deadline");
-
                     b.Property<DateTimeOffset?>("SkillReadyAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("skill_ready_at");
 
                     b.HasKey("RoomId", "PlayerId");
-
-                    b.HasIndex("LeaseExpiresAt")
-                        .HasFilter("connection_status = 1");
-
-                    b.HasIndex("ReconnectDeadline")
-                        .HasFilter("connection_status = 2");
 
                     b.HasIndex("RoomId", "PlayerOrder")
                         .IsUnique();
@@ -339,8 +304,6 @@ namespace CoopGameServer.Persistence.Migrations
                     b.ToTable("game_room_players", null, t =>
                         {
                             t.HasCheckConstraint("CK_game_room_players_combat_status", "(current_health > 0 AND combat_status = 0) OR (current_health = 0 AND combat_status = 1)");
-
-                            t.HasCheckConstraint("CK_game_room_players_connection", "connection_generation >= 0 AND (\n  (connection_status = 0 AND connection_generation = 0\n    AND connection_id IS NULL AND last_seen_at IS NULL AND lease_expires_at IS NULL\n    AND disconnected_at IS NULL AND reconnect_deadline IS NULL AND abandoned_at IS NULL)\n  OR (connection_status = 1 AND connection_generation > 0\n    AND connection_id IS NOT NULL AND connection_id <> '00000000-0000-0000-0000-000000000000'::uuid\n    AND last_seen_at IS NOT NULL AND lease_expires_at IS NOT NULL AND last_seen_at < lease_expires_at\n    AND disconnected_at IS NULL AND reconnect_deadline IS NULL AND abandoned_at IS NULL)\n  OR (connection_status = 2 AND connection_generation > 0 AND connection_id IS NULL\n    AND last_seen_at IS NOT NULL AND lease_expires_at IS NOT NULL\n    AND disconnected_at IS NOT NULL AND reconnect_deadline IS NOT NULL\n    AND last_seen_at <= disconnected_at AND lease_expires_at = disconnected_at\n    AND disconnected_at < reconnect_deadline AND abandoned_at IS NULL)\n  OR (connection_status = 3 AND connection_id IS NULL AND abandoned_at IS NOT NULL AND (\n    (connection_generation = 0 AND last_seen_at IS NULL AND lease_expires_at IS NULL\n      AND disconnected_at IS NULL AND reconnect_deadline IS NULL)\n    OR (connection_generation > 0 AND last_seen_at IS NOT NULL AND lease_expires_at IS NOT NULL\n      AND disconnected_at IS NOT NULL AND reconnect_deadline IS NOT NULL\n      AND last_seen_at <= disconnected_at AND lease_expires_at = disconnected_at\n      AND disconnected_at < reconnect_deadline AND reconnect_deadline <= abandoned_at)))\n  OR (connection_status = 4 AND connection_id IS NULL AND lease_expires_at IS NULL)\n)");
 
                             t.HasCheckConstraint("CK_game_room_players_health", "max_health > 0 AND current_health BETWEEN 0 AND max_health");
 
@@ -355,11 +318,6 @@ namespace CoopGameServer.Persistence.Migrations
                     b.Property<Guid>("RoomId")
                         .HasColumnType("uuid")
                         .HasColumnName("room_id");
-
-                    b.Property<string>("CancellationReason")
-                        .HasMaxLength(64)
-                        .HasColumnType("character varying(64)")
-                        .HasColumnName("cancellation_reason");
 
                     b.Property<int>("CombatRuleVersion")
                         .HasColumnType("integer")
@@ -394,10 +352,6 @@ namespace CoopGameServer.Persistence.Migrations
                         .HasColumnType("boolean")
                         .HasDefaultValue(false)
                         .HasColumnName("finalization_pending");
-
-                    b.Property<DateTimeOffset?>("InitialConnectDeadline")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("initial_connect_deadline");
 
                     b.Property<int>("Lifecycle")
                         .HasColumnType("integer")
@@ -441,16 +395,11 @@ namespace CoopGameServer.Persistence.Migrations
 
                     b.HasKey("RoomId");
 
-                    b.HasIndex("InitialConnectDeadline")
-                        .HasFilter("lifecycle = 0");
-
                     b.HasIndex("QueueKey", "Lifecycle", "CreatedAt")
                         .HasDatabaseName("IX_game_rooms_queue_key_lifecycle_created_at");
 
                     b.ToTable("game_rooms", null, t =>
                         {
-                            t.HasCheckConstraint("CK_game_rooms_cancellation_reason", "cancellation_reason IS NULL OR (lifecycle = 2 AND outcome = 3 AND started_at IS NULL AND cancellation_reason = 'InitialConnectionTimeout')");
-
                             t.HasCheckConstraint("CK_game_rooms_combat_rule_version", "combat_rule_version > 0 OR (combat_rule_version = 0 AND lifecycle = 2)");
 
                             t.HasCheckConstraint("CK_game_rooms_enemy_attack_sequence", "enemy_attack_sequence >= 0");
@@ -459,13 +408,11 @@ namespace CoopGameServer.Persistence.Migrations
 
                             t.HasCheckConstraint("CK_game_rooms_four_players", "cardinality(player_ids) = 4");
 
-                            t.HasCheckConstraint("CK_game_rooms_initial_connect_deadline", "lifecycle = 2 OR initial_connect_deadline IS NOT NULL");
-
                             t.HasCheckConstraint("CK_game_rooms_lifecycle", "lifecycle IN (0, 1, 2)");
 
                             t.HasCheckConstraint("CK_game_rooms_lifecycle_outcome", "(lifecycle IN (0, 1) AND outcome = 0) OR (lifecycle = 2 AND outcome IN (1, 2, 3))");
 
-                            t.HasCheckConstraint("CK_game_rooms_lifecycle_times", "(lifecycle = 0 AND started_at IS NULL AND completed_at IS NULL) OR (lifecycle = 1 AND started_at IS NOT NULL AND completed_at IS NULL) OR (lifecycle = 2 AND completed_at IS NOT NULL AND (started_at IS NOT NULL OR outcome = 3))");
+                            t.HasCheckConstraint("CK_game_rooms_lifecycle_times", "(lifecycle = 0 AND started_at IS NULL AND completed_at IS NULL) OR (lifecycle = 1 AND started_at IS NOT NULL AND completed_at IS NULL) OR (lifecycle = 2 AND started_at IS NOT NULL AND completed_at IS NOT NULL)");
 
                             t.HasCheckConstraint("CK_game_rooms_outcome", "outcome IN (0, 1, 2, 3)");
 
@@ -475,7 +422,7 @@ namespace CoopGameServer.Persistence.Migrations
 
                             t.HasCheckConstraint("CK_game_rooms_state_version", "state_version > 0");
 
-                            t.HasCheckConstraint("CK_game_rooms_wave_state", "(lifecycle = 0 AND max_waves = 3 AND current_wave = 0 AND enemy_max_health = 0 AND enemy_current_health = 0 AND enemy_attack_sequence = 0) OR (lifecycle IN (1, 2) AND combat_rule_version > 0 AND max_waves = 3 AND current_wave BETWEEN 1 AND 3 AND enemy_max_health > 0) OR (lifecycle = 2 AND outcome = 3 AND started_at IS NULL AND max_waves = 3 AND current_wave = 0 AND enemy_max_health = 0 AND enemy_current_health = 0 AND enemy_attack_sequence = 0) OR (lifecycle = 2 AND max_waves = 0 AND current_wave = 0 AND enemy_max_health = 0 AND enemy_current_health = 0 AND enemy_attack_sequence = 0)");
+                            t.HasCheckConstraint("CK_game_rooms_wave_state", "(lifecycle = 0 AND max_waves = 3 AND current_wave = 0 AND enemy_max_health = 0 AND enemy_current_health = 0 AND enemy_attack_sequence = 0) OR (lifecycle IN (1, 2) AND combat_rule_version > 0 AND max_waves = 3 AND current_wave BETWEEN 1 AND 3 AND enemy_max_health > 0) OR (lifecycle = 2 AND max_waves = 0 AND current_wave = 0 AND enemy_max_health = 0 AND enemy_current_health = 0 AND enemy_attack_sequence = 0)");
                         });
                 });
 
@@ -524,7 +471,7 @@ namespace CoopGameServer.Persistence.Migrations
 
                     b.ToTable("game_room_requests", null, t =>
                         {
-                            t.HasCheckConstraint("CK_game_room_requests_payload_shape", "(command_kind IN ('Create', 'Complete') AND request_payload_json IS NOT NULL AND player_id IS NULL AND accepted_command_sequence IS NULL) OR (command_kind = 'Start' AND request_payload_json IS NULL AND player_id IS NULL AND accepted_command_sequence IS NULL) OR (command_kind = 'Connection' AND request_payload_json IS NOT NULL AND player_id IS NOT NULL AND accepted_command_sequence IS NULL) OR (command_kind IN ('BasicAttack', 'UseSkill') AND request_payload_json IS NOT NULL AND player_id IS NOT NULL AND (accepted_command_sequence IS NULL OR accepted_command_sequence > 0))");
+                            t.HasCheckConstraint("CK_game_room_requests_payload_shape", "(command_kind IN ('Create', 'Complete') AND request_payload_json IS NOT NULL AND player_id IS NULL AND accepted_command_sequence IS NULL) OR (command_kind = 'Start' AND request_payload_json IS NULL AND player_id IS NULL AND accepted_command_sequence IS NULL) OR (command_kind IN ('BasicAttack', 'UseSkill') AND request_payload_json IS NOT NULL AND player_id IS NOT NULL AND (accepted_command_sequence IS NULL OR accepted_command_sequence > 0))");
                         });
                 });
 

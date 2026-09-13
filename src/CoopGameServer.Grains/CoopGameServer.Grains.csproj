@@ -7,6 +7,12 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- 외부 서버를 실행하지 않고 내부 상태 전이를 단위 테스트합니다. -->
+    <InternalsVisibleTo Include="CoopGameServer.UnitTests" />
+    <InternalsVisibleTo Include="CoopGameServer.IntegrationTests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="Microsoft.EntityFrameworkCore" Version="10.0.11" />
     <PackageReference Include="Microsoft.Orleans.Server" Version="10.2.2" />
     <PackageReference Include="Npgsql" Version="10.0.3" />

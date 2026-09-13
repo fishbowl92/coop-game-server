@@ -11,6 +11,14 @@ namespace CoopGameServer.GrainContracts.GameRooms;
 /// </remarks>
 public interface IGameRoomGrain : IGrainWithGuidKey
 {
+    /// <summary>인증된 참가자의 연결·생존 신호·재접속·연결 종료·전투 시작을 처리합니다.</summary>
+    Task<GameRoomConnectionResult> ExecuteConnectionAsync(GameRoomConnectionCommand command);
+    /// <summary>서버 타이머와 복구 작업자가 동일한 절대 시각 만료 규칙을 실행합니다.</summary>
+    Task ReconcileDeadlinesAsync();
+    /// <summary>본인의 현재 세대와 공개 전투 상태를 조회합니다. 연결 ID는 반환하지 않습니다.</summary>
+    Task<GameRoomConnectionResult> GetPlayerViewAsync(Guid playerId);
+    /// <summary>현재 연결을 검증하고 공격 후보와 최초 결과를 한 트랜잭션으로 저장합니다.</summary>
+    Task<GameRoomCombatResult> ExecuteCombatAsync(GameRoomCombatCommand command);
     /// <summary>MatchQueueGrain의 4인 배정 결과로 아직 존재하지 않는 게임 방을 생성합니다.</summary>
     /// <param name="requestId">같은 생성 요청의 재전송을 식별하는 고유 번호입니다.</param>
     /// <param name="assignment">방·파티·플레이어 구성이 들어 있는 매칭 결과입니다.</param>

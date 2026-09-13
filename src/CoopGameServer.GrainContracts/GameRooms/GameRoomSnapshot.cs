@@ -38,4 +38,6 @@ public sealed record GameRoomSnapshot(
     [property: Id(14)] int EnemyMaxHealth = 0,
     [property: Id(15)] int EnemyCurrentHealth = 0,
     [property: Id(16)] long StateVersion = 0,
-    [property: Id(17)] long EnemyAttackSequence = 0);
+    [property: Id(17)] long EnemyAttackSequence = 0,
+    [property: Id(18)] DateTimeOffset? InitialConnectDeadline = null,
+    [property: Id(19)] string? CancellationReason = null);

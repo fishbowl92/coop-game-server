@@ -69,6 +69,9 @@ public sealed class GameRoomsController(GameRoomService gameRoomService) : Contr
         [FromBody] CompleteGameRoomRequest request,
         CancellationToken cancellationToken)
     {
+        // 공개 API에서는 승리·패배를 임의로 확정하지 않습니다. 운영자는 취소만 할 수 있습니다.
+        if (!string.Equals(request.Outcome, nameof(GameOutcome.Cancelled), StringComparison.Ordinal))
+            return BadRequest(new ProblemDetails { Status = 400, Title = "Only cancellation is allowed" });
         var result = await gameRoomService.CompleteAsync(
             roomId,
             request.RequestId,

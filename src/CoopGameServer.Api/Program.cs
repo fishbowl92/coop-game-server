@@ -85,6 +85,7 @@ builder.Host.UseOrleansClient(clientBuilder =>
 });
 
 builder.Services.AddControllers();
+builder.Services.AddGameRoomRateLimits();
 builder.Services.AddOpenApi();
 
 var app = builder.Build();
@@ -99,7 +100,11 @@ app.UseHttpsRedirection();
 // 반드시 UseAuthorization보다 먼저 실행해야 JWT를 ClaimsPrincipal로 변환할 수 있습니다.
 app.UseAuthentication();
 app.UseAuthorization();
+app.UseRateLimiter();
 
 app.MapControllers();
 
 app.Run();
+
+/// <summary>WebApplicationFactory가 실제 API 시작 구성을 사용하는 HTTP 통합 테스트 진입점입니다.</summary>
+public partial class Program;

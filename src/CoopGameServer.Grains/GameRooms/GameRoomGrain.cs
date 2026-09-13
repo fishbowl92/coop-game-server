@@ -11,6 +11,7 @@ using CoopGameServer.GrainContracts.Players;
 using CoopGameServer.Persistence;
 using CoopGameServer.Persistence.GameRooms;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 
 namespace CoopGameServer.Grains.GameRooms;
 
@@ -22,9 +23,10 @@ namespace CoopGameServer.Grains.GameRooms;
 /// PartyGrain은 별도 Grain·별도 트랜잭션이므로 분산 트랜잭션을 사용하지 않고,
 /// 결정적인 하위 requestId와 현재 상태 확인으로 중간 실패 뒤 재시도 시 같은 결과로 수렴시킵니다.
 /// </remarks>
-public sealed class GameRoomGrain(
+public sealed partial class GameRoomGrain(
     IDbContextFactory<GameDbContext> dbContextFactory,
-    TimeProvider timeProvider)
+    TimeProvider timeProvider,
+    ILogger<GameRoomGrain> logger)
     : Grain, IGameRoomGrain
 {
     private const int InitialRetryDelaySeconds = 5;
@@ -37,6 +39,128 @@ public sealed class GameRoomGrain(
     };
 
     private GameRoomState _state = new();
+    private IGrainTimer? _deadlineTimer;
+
+    public async Task<GameRoomConnectionResult> GetPlayerViewAsync(Guid playerId)
+    {
+        await ReconcileDeadlinesAsync();
+        var room = _state.Get();
+        if (room is null) return new("RoomNotCreated", false, null);
+        if (!room.PlayerIds.Contains(playerId)) return new("PlayerNotInRoom", false, null);
+        var connection = _state.GetConnection(playerId);
+        return new("None", false, room, Generation: connection.Generation, LeaseExpiresAt: connection.LeaseExpiresAt);
+    }
+
+    /// <inheritdoc />
+    public async Task ReconcileDeadlinesAsync()
+    {
+        var candidate = _state.Clone();
+        if (candidate.EvaluateDeadlines(timeProvider.GetUtcNow()))
+            await PersistReconciliationAsync(candidate);
+        if (_state.Get()?.Lifecycle == GameRoomLifecycle.Completed)
+        {
+            _deadlineTimer?.Dispose();
+            _deadlineTimer = null;
+            try { await FinalizeCompletedRoomAsync(); }
+            catch (Exception exception) { LogFinalizationDeferred(logger, this.GetPrimaryKey(), exception); }
+        }
+    }
+
+    /// <summary>만료 처리도 방·참가자·결과 대기 행을 한 트랜잭션으로 확정합니다.</summary>
+    private async Task PersistReconciliationAsync(GameRoomState candidate)
+    {
+        await using var context = await dbContextFactory.CreateDbContextAsync();
+        await using var transaction = await context.Database.BeginTransactionAsync();
+        await SynchronizeStateAsync(context, this.GetPrimaryKey(), candidate);
+        if (candidate.Get()?.Lifecycle == GameRoomLifecycle.Completed && _state.Get()?.Lifecycle != GameRoomLifecycle.Completed)
+            (await context.GameRooms.SingleAsync(r => r.RoomId == this.GetPrimaryKey())).SetFinalizationPending(true);
+        await context.SaveChangesAsync();
+        await transaction.CommitAsync();
+        _state = candidate;
+    }
+
+    private void EnsureDeadlineTimer()
+    {
+        if (_deadlineTimer is null && _state.Get()?.Lifecycle is GameRoomLifecycle.Ready or GameRoomLifecycle.InGame)
+            _deadlineTimer = this.RegisterGrainTimer(_ => ReconcileDeadlinesAsync(),
+                new GrainTimerCreationOptions(TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1))
+                { KeepAlive = true, Interleave = false });
+    }
+
+    public override Task OnDeactivateAsync(DeactivationReason reason, CancellationToken cancellationToken)
+    {
+        _deadlineTimer?.Dispose();
+        _deadlineTimer = null;
+        return base.OnDeactivateAsync(reason, cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public async Task<GameRoomConnectionResult> ExecuteConnectionAsync(GameRoomConnectionCommand command)
+    {
+        ArgumentNullException.ThrowIfNull(command);
+        await ReconcileDeadlinesAsync();
+        var candidate = _state.Clone();
+        var result = candidate.ExecuteConnection(command, timeProvider.GetUtcNow(), Guid.NewGuid());
+        if (result.IsReplay || result.Room is null) return result;
+        if (command.Action == GameRoomConnectionAction.StartCombat && result.Error == "None")
+        {
+            var failure = await StartPreformedPartiesAsync(_state.Get()!, command.RequestId);
+            if (failure is not null) return new(failure.Error.ToString(), false, _state.Get());
+        }
+        if (command.Action == GameRoomConnectionAction.Heartbeat)
+        {
+            // 자격 검사에 실패했어도 평가된 만료 상태는 저장합니다. 요청 이력은 추가하지 않습니다.
+            await using var context = await dbContextFactory.CreateDbContextAsync();
+            await using var transaction = await context.Database.BeginTransactionAsync();
+            await SynchronizeStateAsync(context, this.GetPrimaryKey(), candidate);
+            await context.SaveChangesAsync();
+            await transaction.CommitAsync();
+            _state = candidate;
+        }
+        else await PersistCandidateStateAsync(candidate, command.RequestId);
+        return result;
+    }
+
+    [LoggerMessage(EventId = 4200, Level = LogLevel.Warning, Message = "완료된 방 {RoomId}의 후처리가 보류됐습니다")]
+    private static partial void LogFinalizationDeferred(ILogger logger, Guid roomId, Exception exception);
+
+    /// <inheritdoc />
+    public async Task<GameRoomCombatResult> ExecuteCombatAsync(GameRoomCombatCommand command)
+    {
+        ArgumentNullException.ThrowIfNull(command);
+        await ReconcileDeadlinesAsync();
+        var candidate = _state.Clone();
+        var now = timeProvider.GetUtcNow();
+        var connection = candidate.GetConnection(command.PlayerId);
+        GameRoomCombatResult result;
+        if (command.RequestId != Guid.Empty && candidate.GetStoredRequest(command.RequestId) is null
+            && candidate.Get() is { Lifecycle: GameRoomLifecycle.InGame } snapshot
+            && snapshot.PlayerIds.Contains(command.PlayerId) && command.Sequence > 0 && Enum.IsDefined(command.Kind)
+            && (connection.Status != CoopGameServer.Domain.GameRooms.RoomConnectionStatus.Connected
+                || connection.ConnectionId != command.ConnectionId || connection.Generation != command.ConnectionGeneration
+                || connection.LeaseExpiresAt <= now))
+            result = candidate.RememberCombat(command, now, GameRoomCombatError.StaleConnection, null);
+        else result = candidate.ExecuteCombat(command, now);
+        if (!result.IsReplay)
+        {
+            await PersistCandidateStateAsync(candidate, command.RequestId);
+        }
+
+        if (result.Error == GameRoomCombatError.None && result.Room?.Lifecycle == GameRoomLifecycle.Completed)
+        {
+            try
+            {
+                await FinalizeCompletedRoomAsync();
+            }
+            catch (Exception exception)
+            {
+                // 완료는 이미 커밋됐습니다. 후처리 오류로 성공한 공격을 실패로 바꾸지 않습니다.
+                LogFinalizationDeferred(logger, this.GetPrimaryKey(), exception);
+            }
+        }
+
+        return result;
+    }
 
     /// <summary>Grain 활성화 시 PostgreSQL에서 방 상태와 최초 요청 결과를 복원합니다.</summary>
     public override async Task OnActivateAsync(CancellationToken cancellationToken)
@@ -65,9 +189,14 @@ public sealed class GameRoomGrain(
 
         _state = GameRoomState.Restore(
             restoredSnapshot,
-            requestRecords.Select(RestoreStoredRequest));
+            requestRecords.Select(RestoreStoredRequest),
+            participants.Select(p => new KeyValuePair<Guid, CoopGameServer.Domain.GameRooms.RoomPlayerConnection>(p.PlayerId, p.ReadConnection())));
 
         await base.OnActivateAsync(cancellationToken);
+        // 후처리의 외부 Grain 호출은 활성화 완료 후 타이머에서 수행해 활성화 교착을 피합니다.
+        var candidate = _state.Clone();
+        if (candidate.EvaluateDeadlines(timeProvider.GetUtcNow())) await PersistReconciliationAsync(candidate);
+        EnsureDeadlineTimer();
     }
 
     /// <inheritdoc />
@@ -83,13 +212,15 @@ public sealed class GameRoomGrain(
         }
 
         await PersistCandidateStateAsync(candidateState, requestId);
+        EnsureDeadlineTimer();
         return result;
     }
 
     /// <inheritdoc />
-    public Task<GameRoomSnapshot?> GetAsync()
+    public async Task<GameRoomSnapshot?> GetAsync()
     {
-        return Task.FromResult(_state.Get());
+        await ReconcileDeadlinesAsync();
+        return _state.Get();
     }
 
     /// <inheritdoc />
@@ -180,6 +311,41 @@ public sealed class GameRoomGrain(
         if (room is null || room.Lifecycle is not GameRoomLifecycle.Completed)
         {
             return;
+        }
+
+        // 전투 완료와 함께 저장한 표식은 재시작 후에도 남습니다. 모든 외부 호출이 끝난 뒤에만 제거합니다.
+        await using (var context = await dbContextFactory.CreateDbContextAsync())
+        {
+            var record = await context.GameRooms.SingleAsync(r => r.RoomId == room.RoomId);
+            if (record.FinalizationPending)
+            {
+                foreach (var partyId in room.PartyIds)
+                {
+                    // 조회 후 상태를 판단하지 않고 같은 하위 요청을 재생합니다. 파티가 새 게임에 들어간 뒤에도
+                    // 이전 완료의 성공 응답만 재생하므로 새 게임 상태를 변경하지 않습니다.
+                    var party = GrainFactory.GetGrain<IPartyGrain>(partyId);
+                    PartyCommandResult partyResult;
+                    if (room.StartedAt is null)
+                    {
+                        // 현재 리더가 아니라 당시 매칭 티켓의 리더를 사용해야 재시도 입력이 변하지 않습니다.
+                        var ticket = await context.MatchQueueTickets.AsNoTracking()
+                            .SingleAsync(t => t.RoomId == room.RoomId && t.PartyId == partyId);
+                        partyResult = await party.CancelMatchQueueAsync(CreatePartyRequestId(room.RoomId, partyId, 3), ticket.LeaderPlayerId);
+                        // 시작 중 외부 파티만 InGame으로 넘어간 경우도 같은 완료 키로 복구합니다.
+                        if (partyResult.Error != PartyCommandError.None)
+                            partyResult = await party.CompleteGameAsync(CreatePartyRequestId(room.RoomId, partyId, 2), room.RoomId);
+                    }
+                    else partyResult = await party.CompleteGameAsync(CreatePartyRequestId(room.RoomId, partyId, 2), room.RoomId);
+                    if (partyResult.Error != PartyCommandError.None)
+                    {
+                        throw new InvalidOperationException($"파티 복귀가 보류됐습니다: {partyResult.Error}");
+                    }
+                }
+
+                await EnsureMatchTicketsCompletedAsync(room, room.RoomId);
+                record.SetFinalizationPending(false);
+                await context.SaveChangesAsync();
+            }
         }
 
         var now = timeProvider.GetUtcNow();
@@ -525,10 +691,19 @@ public sealed class GameRoomGrain(
             return;
         }
 
+        if (candidateState.Get()?.Lifecycle == GameRoomLifecycle.Completed) candidateState.CloseConnections();
+
         await using var gameDbContext = await dbContextFactory.CreateDbContextAsync();
         await using var transaction = await gameDbContext.Database.BeginTransactionAsync();
 
         await SynchronizeStateAsync(gameDbContext, this.GetPrimaryKey(), candidateState);
+        if (newRequest.CommandKind == GameRoomCommandKind.Combat
+            && newRequest.CombatError == GameRoomCombatError.None
+            && candidateState.Get()?.Lifecycle == GameRoomLifecycle.Completed)
+        {
+            var roomRecord = await gameDbContext.GameRooms.SingleAsync(r => r.RoomId == this.GetPrimaryKey());
+            roomRecord.SetFinalizationPending(true);
+        }
         // Append-only(추가 전용): 이미 확정된 요청 행은 삭제·갱신하지 않습니다.
         // 예상하지 못한 DB 키 충돌도 삭제로 우회하지 않고 트랜잭션 실패로 드러냅니다.
         gameDbContext.GameRoomRequests.Add(CreateRequestRecord(this.GetPrimaryKey(), newRequest));
@@ -558,7 +733,7 @@ public sealed class GameRoomGrain(
         }
         else if (existingRoom is null)
         {
-            gameDbContext.GameRooms.Add(new GameRoomRecord(
+            var newRoom = new GameRoomRecord(
                 snapshot.RoomId,
                 snapshot.QueueKey,
                 (int)snapshot.Lifecycle,
@@ -571,7 +746,9 @@ public sealed class GameRoomGrain(
                 snapshot.RewardPolicyVersion,
                 snapshot.CombatRuleVersion,
                 snapshot.CurrentWave, snapshot.MaxWaves, snapshot.EnemyMaxHealth,
-                snapshot.EnemyCurrentHealth, snapshot.StateVersion, snapshot.EnemyAttackSequence));
+                snapshot.EnemyCurrentHealth, snapshot.StateVersion, snapshot.EnemyAttackSequence);
+            newRoom.UpdateConnectionLifecycle(snapshot.InitialConnectDeadline, snapshot.CancellationReason);
+            gameDbContext.GameRooms.Add(newRoom);
         }
         else
         {
@@ -584,20 +761,21 @@ public sealed class GameRoomGrain(
                 (int)snapshot.Outcome);
             existingRoom.UpdateCombatProgress(snapshot.CurrentWave, snapshot.MaxWaves,
                 snapshot.EnemyMaxHealth, snapshot.EnemyCurrentHealth, snapshot.StateVersion, snapshot.EnemyAttackSequence);
+            existingRoom.UpdateConnectionLifecycle(snapshot.InitialConnectDeadline, snapshot.CancellationReason);
         }
 
         // 방 완료와 네 플레이어의 결과 전달 대기 행은 반드시 같은 Transaction으로 저장합니다.
         // 방만 Completed가 되고 결과 행이 빠지면 이후 복구 서비스가 전달 대상을 찾을 수 없습니다.
         if (snapshot is not null)
         {
-            await SynchronizeParticipantsAsync(gameDbContext, snapshot, existingRoom is null);
+            await SynchronizeParticipantsAsync(gameDbContext, snapshot, existingRoom is null, state);
             await SynchronizeGameResultsAsync(gameDbContext, snapshot);
         }
     }
 
     /// <summary>새 방에는 네 참가자를 추가하고, 기존 방은 구성 검증 후 바뀐 값만 저장합니다.</summary>
     private static async Task SynchronizeParticipantsAsync(
-        GameDbContext context, GameRoomSnapshot snapshot, bool isNewRoom)
+        GameDbContext context, GameRoomSnapshot snapshot, bool isNewRoom, GameRoomState state)
     {
         var players = ValidateParticipants(snapshot);
         var records = await context.GameRoomPlayers
@@ -614,10 +792,12 @@ public sealed class GameRoomGrain(
 
             foreach (var player in players)
             {
-                context.GameRoomPlayers.Add(new GameRoomPlayerRecord(snapshot.RoomId,
+                var participant = new GameRoomPlayerRecord(snapshot.RoomId,
                     player.PlayerId, player.PlayerOrder, player.MaxHealth, player.CurrentHealth,
                     (int)player.CombatStatus, player.LastAcceptedCommandSequence,
-                    player.BasicAttackReadyAt, player.SkillReadyAt));
+                    player.BasicAttackReadyAt, player.SkillReadyAt);
+                participant.UpdateConnection(state.GetConnection(player.PlayerId));
+                context.GameRoomPlayers.Add(participant);
             }
 
             return;
@@ -636,6 +816,7 @@ public sealed class GameRoomGrain(
             records[player.PlayerOrder].Update(player.MaxHealth, player.CurrentHealth,
                 (int)player.CombatStatus, player.LastAcceptedCommandSequence,
                 player.BasicAttackReadyAt, player.SkillReadyAt);
+            records[player.PlayerOrder].UpdateConnection(state.GetConnection(player.PlayerId));
         }
     }
 
@@ -743,10 +924,30 @@ public sealed class GameRoomGrain(
     }
 
     /// <summary>메모리의 최초 명령과 결과를 PostgreSQL JSON 행으로 변환합니다.</summary>
-    private static GameRoomRequestRecord CreateRequestRecord(
+    internal static GameRoomRequestRecord CreateRequestRecord(
         Guid roomId,
         GameRoomStoredRequest storedRequest)
     {
+        if (storedRequest.CommandKind == GameRoomCommandKind.Connection)
+        {
+            var connectionCommand = storedRequest.ConnectionCommand ?? throw new InvalidOperationException("연결 요청이 없습니다.");
+            return new(storedRequest.RequestId, roomId, "Connection",
+                JsonSerializer.Serialize(connectionCommand, JsonOptions),
+                JsonSerializer.Serialize(storedRequest.ConnectionResult ?? throw new InvalidOperationException("연결 결과가 없습니다."), JsonOptions),
+                storedRequest.CreatedAt, connectionCommand.PlayerId);
+        }
+        if (storedRequest.CommandKind == GameRoomCommandKind.Combat)
+        {
+            var command = storedRequest.CombatCommand
+                ?? throw new InvalidOperationException("전투 요청 원문이 없습니다.");
+            // 전투 오류를 기존 생명주기 결과의 None으로 저장하면 거부도 성공으로 복원되므로 전용 결과를 저장합니다.
+            var combatResult = new GameRoomCombatResult(storedRequest.CombatError, false, storedRequest.Result.Room, storedRequest.RetryAt);
+            return new GameRoomRequestRecord(storedRequest.RequestId, roomId, command.Kind.ToString(),
+                JsonSerializer.Serialize(command, JsonOptions), JsonSerializer.Serialize(combatResult, JsonOptions),
+                storedRequest.CreatedAt, command.PlayerId,
+                storedRequest.CombatError == GameRoomCombatError.None ? command.Sequence : null);
+        }
+
         var requestPayloadJson = storedRequest.CommandKind switch
         {
             GameRoomCommandKind.Create => JsonSerializer.Serialize(
@@ -772,8 +973,44 @@ public sealed class GameRoomGrain(
     }
 
     /// <summary>PostgreSQL JSON 행을 메모리 멱등성 기록으로 복원합니다.</summary>
-    private static GameRoomStoredRequest RestoreStoredRequest(GameRoomRequestRecord record)
+    internal static GameRoomStoredRequest RestoreStoredRequest(GameRoomRequestRecord record)
     {
+        if (record.CommandKind == "Connection")
+        {
+            var connectionCommand = JsonSerializer.Deserialize<GameRoomConnectionCommand>(record.RequestPayloadJson
+                ?? throw new InvalidOperationException("연결 요청이 없습니다."), JsonOptions)
+                ?? throw new InvalidOperationException("연결 요청 복원 실패입니다.");
+            var connectionResult = JsonSerializer.Deserialize<GameRoomConnectionResult>(record.ResultPayloadJson, JsonOptions)
+                ?? throw new InvalidOperationException("연결 결과 복원 실패입니다.");
+            if (connectionCommand.RequestId != record.RequestId || connectionCommand.PlayerId != record.PlayerId
+                || !Enum.IsDefined(connectionCommand.Action) || connectionCommand.Action == GameRoomConnectionAction.Heartbeat
+                || connectionResult.Room?.RoomId != record.RoomId || connectionResult.IsReplay)
+                throw new InvalidOperationException("연결 요청 열과 저장 결과가 일치하지 않습니다.");
+            return new(record.RequestId, GameRoomCommandKind.Connection, null, null,
+                new(false, GameRoomCommandError.None, connectionResult.Room, null, null), record.CreatedAt,
+                ConnectionCommand: connectionCommand, ConnectionResult: connectionResult);
+        }
+        if (record.CommandKind is nameof(CombatActionKind.BasicAttack) or nameof(CombatActionKind.UseSkill))
+        {
+            var command = JsonSerializer.Deserialize<GameRoomCombatCommand>(record.RequestPayloadJson
+                ?? throw new InvalidOperationException("전투 요청 원문이 없습니다."), JsonOptions)
+                ?? throw new InvalidOperationException("전투 요청을 복원할 수 없습니다.");
+            var combat = JsonSerializer.Deserialize<GameRoomCombatResult>(record.ResultPayloadJson, JsonOptions)
+                ?? throw new InvalidOperationException("전투 결과를 복원할 수 없습니다.");
+            if (command.RequestId != record.RequestId || command.PlayerId != record.PlayerId
+                || command.Kind.ToString() != record.CommandKind || !Enum.IsDefined(combat.Error)
+                || command.Sequence <= 0 || command.PlayerId == Guid.Empty
+                || record.AcceptedCommandSequence != (combat.Error == GameRoomCombatError.None ? command.Sequence : (long?)null)
+                || combat.Room?.RoomId != record.RoomId || combat.IsReplay)
+            {
+                throw new InvalidOperationException("전투 요청의 열과 JSON 결과가 일치하지 않습니다.");
+            }
+
+            return new GameRoomStoredRequest(record.RequestId, GameRoomCommandKind.Combat, null, null,
+                new GameRoomCommandResult(false, GameRoomCommandError.None, combat.Room, null, null),
+                record.CreatedAt, command, combat.Error, combat.RetryAt);
+        }
+
         if (!Enum.TryParse<GameRoomCommandKind>(record.CommandKind, ignoreCase: false, out var commandKind))
         {
             throw new InvalidOperationException($"알 수 없는 게임 방 명령 종류입니다: {record.CommandKind}");
@@ -823,7 +1060,8 @@ public sealed class GameRoomGrain(
                 player.MaxHealth, player.CurrentHealth, (PlayerCombatStatus)player.CombatStatus,
                 player.LastCommandSequence, player.BasicAttackReadyAt, player.SkillReadyAt)).ToArray(),
             record.CurrentWave, record.MaxWaves, record.EnemyMaxHealth,
-            record.EnemyCurrentHealth, record.StateVersion, record.EnemyAttackSequence);
+            record.EnemyCurrentHealth, record.StateVersion, record.EnemyAttackSequence,
+            record.InitialConnectDeadline, record.CancellationReason);
     }
 
     /// <summary>Complete 명령의 멱등성 비교를 위해 JSON에 저장하는 최소 요청 원문입니다.</summary>

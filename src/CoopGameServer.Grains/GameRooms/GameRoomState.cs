@@ -10,7 +10,7 @@ namespace CoopGameServer.Grains.GameRooms;
 /// 이 클래스는 순수한 상태 전이 규칙만 담당합니다. PostgreSQL 저장과 PartyGrain 호출은
 /// GameRoomGrain이 담당하여 외부 호출 또는 DB 저장 실패 시 기존 메모리 상태를 보존합니다.
 /// </remarks>
-internal sealed class GameRoomState
+internal sealed partial class GameRoomState
 {
     /// <summary>MatchQueueState의 4인 정원과 같은 게임 방 참가자 수입니다.</summary>
     internal const int TargetPlayerCount = 4;
@@ -32,11 +32,13 @@ internal sealed class GameRoomState
 
     private readonly Dictionary<Guid, GameRoomStoredRequest> _requests = [];
     private GameRoomSnapshot? _room;
+    private readonly Dictionary<Guid, RoomPlayerConnection> _connections = [];
 
     /// <summary>PostgreSQL에서 읽은 방과 최초 요청 결과들로 메모리 상태를 복원합니다.</summary>
     internal static GameRoomState Restore(
         GameRoomSnapshot? room,
-        IEnumerable<GameRoomStoredRequest> requests)
+        IEnumerable<GameRoomStoredRequest> requests,
+        IEnumerable<KeyValuePair<Guid, RoomPlayerConnection>>? connections = null)
     {
         var state = new GameRoomState
         {
@@ -48,14 +50,30 @@ internal sealed class GameRoomState
             state._requests.Add(request.RequestId, NormalizeRestoredRequest(request, state._room));
         }
 
+        foreach (var connection in connections ?? []) state._connections.Add(connection.Key, connection.Value);
         return state;
     }
 
     /// <summary>DB 저장 전 후보 상태를 안전하게 변경할 수 있도록 깊은 복사본을 만듭니다.</summary>
-    internal GameRoomState Clone() => Restore(_room, GetStoredRequests());
+    internal GameRoomState Clone() => Restore(_room, GetStoredRequests(), _connections);
+
+    /// <summary>공개 스냅샷과 분리해 저장 계층에만 전달하는 연결 상태입니다.</summary>
+    internal RoomPlayerConnection GetConnection(Guid playerId) => _connections.GetValueOrDefault(playerId) ?? new();
 
     /// <summary>현재 방 상태의 방어적 복사본을 반환합니다.</summary>
-    internal GameRoomSnapshot? Get() => CloneSnapshot(_room);
+    internal GameRoomSnapshot? Get()
+    {
+        var snapshot = CloneSnapshot(_room);
+        return snapshot is null ? null : snapshot with
+        {
+            Players = snapshot.Players?.Select(player => player with
+            {
+                ConnectionStatus = (snapshot.Lifecycle == GameRoomLifecycle.Completed
+                    ? GameRoomConnectionRules.Close(GetConnection(player.PlayerId)).Status
+                    : GetConnection(player.PlayerId).Status).ToString(),
+            }).ToArray(),
+        };
+    }
 
     /// <summary>후보 상태 복제에 사용할 전체 멱등성 요청 기록의 복사본을 반환합니다.</summary>
     internal GameRoomStoredRequest[] GetStoredRequests()
@@ -125,7 +143,8 @@ internal sealed class GameRoomState
                 playerId, order, InitialPlayerHealth, InitialPlayerHealth,
                 PlayerCombatStatus.Active, 0, null, null)).ToArray(),
             MaxWaves: GameRoomCombatRules.WaveCount,
-            StateVersion: 1);
+            StateVersion: 1,
+            InitialConnectDeadline: assignment.CreatedAt.AddSeconds(30));
 
         return StoreCreate(requestId, assignment, Success());
     }
@@ -243,6 +262,9 @@ internal sealed class GameRoomState
             // 현재 관리자용 결과 지정 경로입니다. 적 체력이나 웨이브를 조작하여 승리를 꾸미지 않습니다.
             StateVersion = checked(_room.StateVersion + 1),
         };
+
+        // 완료 응답을 만드는 시점부터 모든 활성 연결 자격을 폐기합니다.
+        CloseConnections();
 
         return StoreComplete(requestId, outcome, Success());
     }
@@ -446,6 +468,8 @@ internal enum GameRoomCommandKind
     Create = 0,
     Start = 1,
     Complete = 2,
+    Combat = 3,
+    Connection = 4,
 }
 
 /// <summary>Silo 재시작 뒤에도 최초 방 명령 결과를 재생하기 위한 메모리 기록입니다.</summary>
@@ -455,7 +479,12 @@ internal sealed record GameRoomStoredRequest(
     MatchAssignment? CreateAssignment,
     GameOutcome? CompleteOutcome,
     GameRoomCommandResult Result,
-    DateTimeOffset CreatedAt)
+    DateTimeOffset CreatedAt,
+    GameRoomCombatCommand? CombatCommand = null,
+    GameRoomCombatError CombatError = GameRoomCombatError.None,
+    DateTimeOffset? RetryAt = null,
+    GameRoomConnectionCommand? ConnectionCommand = null,
+    GameRoomConnectionResult? ConnectionResult = null)
 {
     internal static GameRoomStoredRequest ForCreate(
         Guid requestId,
@@ -524,6 +553,7 @@ internal sealed record GameRoomStoredRequest(
         {
             CreateAssignment = CreateAssignment is null ? null : CloneAssignment(CreateAssignment),
             Result = GameRoomState.CloneResult(Result),
+            ConnectionResult = ConnectionResult is null ? null : ConnectionResult with { Room = GameRoomState.CloneSnapshot(ConnectionResult.Room) },
         };
     }
 

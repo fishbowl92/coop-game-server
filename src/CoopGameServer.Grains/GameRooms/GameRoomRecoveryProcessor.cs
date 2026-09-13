@@ -44,6 +44,7 @@ public sealed partial class GameRoomRecoveryProcessor(
             {
                 // 과거 상태를 Worker가 직접 해석하지 않고 방을 소유한 Grain에게 복구를 맡깁니다.
                 var gameRoom = grainFactory.GetGrain<IGameRoomGrain>(roomId);
+                await gameRoom.ReconcileDeadlinesAsync();
                 await gameRoom.FinalizeCompletedRoomAsync();
                 succeededRoomCount++;
             }
@@ -77,12 +78,23 @@ public sealed partial class GameRoomRecoveryProcessor(
 
         // 한 방에는 플레이어별로 여러 game_results 행이 있으므로 RoomId만 고른 뒤 Distinct로 중복을 제거합니다.
         // Pending은 최초 전달 전 상태이고, PendingRetry는 NextAttemptAt이 지난 경우에만 다시 깨웁니다.
-        return await gameDbContext.GameResults
+        var resultRooms = gameDbContext.GameResults
             .AsNoTracking()
             .Where(result => result.DeliveryStatus == GameResultDeliveryStatus.Pending
                 || (result.DeliveryStatus == GameResultDeliveryStatus.PendingRetry
                     && (result.NextAttemptAt == null || result.NextAttemptAt <= now)))
             .Select(result => result.RoomId)
+            .Union(gameDbContext.GameRooms.Where(room => room.FinalizationPending
+                || (room.Lifecycle == 0 && room.InitialConnectDeadline <= now)
+                || (room.Lifecycle == 1 && room.InitialConnectDeadline <= now
+                    && gameDbContext.GameRoomPlayers.Any(p => p.RoomId == room.RoomId
+                        && p.ConnectionStatus == CoopGameServer.Domain.GameRooms.RoomConnectionStatus.AwaitingConnection)))
+                .Select(room => room.RoomId))
+            .Union(gameDbContext.GameRoomPlayers.Where(p =>
+                (p.ConnectionStatus == CoopGameServer.Domain.GameRooms.RoomConnectionStatus.Connected && p.LeaseExpiresAt <= now)
+                || (p.ConnectionStatus == CoopGameServer.Domain.GameRooms.RoomConnectionStatus.Disconnected && p.ReconnectDeadline <= now))
+                .Select(p => p.RoomId));
+        return await resultRooms
             .Distinct()
             .OrderBy(roomId => roomId)
             .Take(batchSize)

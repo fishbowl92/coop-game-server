@@ -3,6 +3,7 @@ using System;
 using CoopGameServer.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -11,9 +12,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace CoopGameServer.Persistence.Migrations
 {
     [DbContext(typeof(GameDbContext))]
-    partial class GameDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260911124654_AddGameRoomConnectionDeadlines")]
+    partial class AddGameRoomConnectionDeadlines
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -449,8 +452,6 @@ namespace CoopGameServer.Persistence.Migrations
 
                     b.ToTable("game_rooms", null, t =>
                         {
-                            t.HasCheckConstraint("CK_game_rooms_cancellation_reason", "cancellation_reason IS NULL OR (lifecycle = 2 AND outcome = 3 AND started_at IS NULL AND cancellation_reason = 'InitialConnectionTimeout')");
-
                             t.HasCheckConstraint("CK_game_rooms_combat_rule_version", "combat_rule_version > 0 OR (combat_rule_version = 0 AND lifecycle = 2)");
 
                             t.HasCheckConstraint("CK_game_rooms_enemy_attack_sequence", "enemy_attack_sequence >= 0");
@@ -458,8 +459,6 @@ namespace CoopGameServer.Persistence.Migrations
                             t.HasCheckConstraint("CK_game_rooms_enemy_health", "enemy_max_health >= 0 AND enemy_current_health BETWEEN 0 AND enemy_max_health");
 
                             t.HasCheckConstraint("CK_game_rooms_four_players", "cardinality(player_ids) = 4");
-
-                            t.HasCheckConstraint("CK_game_rooms_initial_connect_deadline", "lifecycle = 2 OR initial_connect_deadline IS NOT NULL");
 
                             t.HasCheckConstraint("CK_game_rooms_lifecycle", "lifecycle IN (0, 1, 2)");
 
