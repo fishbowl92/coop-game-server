@@ -41,9 +41,11 @@ public sealed class GameRoomPlayerMigrationTests
         Assert.Equal(0, stored.EnemyMaxHealth);
         Assert.Equal(0, stored.EnemyCurrentHealth);
         Assert.Equal(0, stored.EnemyAttackSequence);
+        Assert.False(stored.FinalizationPending);
         var preservedRoom = await context.Database.SqlQuery<string>($"""
             SELECT (to_jsonb(r) - ARRAY['current_wave','max_waves','enemy_max_health',
-                'enemy_current_health','state_version','enemy_attack_sequence'])::text AS "Value"
+                'enemy_current_health','state_version','enemy_attack_sequence','finalization_pending',
+                'initial_connect_deadline','cancellation_reason'])::text AS "Value"
             FROM game_rooms r WHERE room_id = {roomId}
             """).SingleAsync();
         Assert.Equal(originalRoom, preservedRoom);
@@ -112,6 +114,12 @@ public sealed class GameRoomPlayerMigrationTests
 
         Assert.Equal(originalResults, await ReadResultsAsync(context));
         Assert.Equal(originalRequests, await ReadRequestsAsync(context));
+        var migratedRequests = await context.GameRoomRequests.AsNoTracking().ToArrayAsync();
+        Assert.All(migratedRequests, request =>
+        {
+            Assert.Null(request.PlayerId);
+            Assert.Null(request.AcceptedCommandSequence);
+        });
         // 추가된 버전 열을 제외한 기존 방의 모든 필드를 비교합니다.
         var preservedRoom = await context.Database.SqlQuery<string>($"""
             SELECT row_to_json(r)::text AS "Value" FROM
@@ -209,6 +217,8 @@ public sealed class GameRoomPlayerMigrationTests
         """).ToArrayAsync();
 
     private static Task<string[]> ReadRequestsAsync(GameDbContext context) => context.Database.SqlQuery<string>($"""
-        SELECT row_to_json(r)::text AS "Value" FROM game_room_requests r ORDER BY request_id
+        SELECT row_to_json(r)::text AS "Value" FROM
+          (SELECT request_id, room_id, command_kind, request_payload_json, result_payload_json, created_at
+           FROM game_room_requests) r ORDER BY request_id
         """).ToArrayAsync();
 }

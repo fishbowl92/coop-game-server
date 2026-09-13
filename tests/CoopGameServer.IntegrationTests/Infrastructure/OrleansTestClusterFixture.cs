@@ -140,7 +140,7 @@ public sealed class OrleansTestSiloConfigurator : IHostConfigurator
                 options.UseNpgsql(connectionString));
 
             // PlayerGrain은 HTTP 요청과 무관한 서버 시각과 호출별 DbContext를 사용하는 Writer에 의존합니다.
-            services.AddSingleton(TimeProvider.System);
+            services.AddSingleton<TimeProvider>(CombatTestTimeProvider.Shared);
             services.AddSingleton<IRewardWriter, PostgreSqlRewardWriter>();
         });
     }

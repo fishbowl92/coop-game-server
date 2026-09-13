@@ -86,7 +86,7 @@ public sealed class MatchmakingFlowControllerTests(OrleansTestClusterFixture fix
 
         var completeRequest = new CompleteGameRoomRequest(
             Guid.NewGuid(),
-            GameOutcome.Victory.ToString());
+            GameOutcome.Cancelled.ToString());
         var completeAction = await adminController.Complete(
             match.RoomId,
             completeRequest,
@@ -96,7 +96,7 @@ public sealed class MatchmakingFlowControllerTests(OrleansTestClusterFixture fix
             await fixture.Cluster.GrainFactory.GetGrain<IPartyGrain>(partyId).GetAsync());
 
         Assert.Equal("Completed", completedRoom.Lifecycle);
-        Assert.Equal("Victory", completedRoom.Outcome);
+        Assert.Equal("Cancelled", completedRoom.Outcome);
         Assert.Equal(1, completedRoom.RewardPolicyVersion);
         Assert.Equal(PartyLifecycle.Active, returnedParty.Lifecycle);
         Assert.Null(returnedParty.CurrentRoomId);
