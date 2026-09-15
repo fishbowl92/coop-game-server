@@ -169,7 +169,7 @@ Player ID를 태그로 넣지 않았습니다. Player마다 새 시계열이 생
 - `PlayersController.GetPlayerProgression(playerId, pageSize, continuationToken, cancellationToken)`: 인증된 결합 조회 API
 - `PlayersController.UpdatePlayerNickname(...)`: DB Commit 뒤 캐시 삭제 요청
 - `OrleansTestClusterFixture`: 실제 Redis Testcontainer 등록
-- `PlayerGrainTests`: 캐시 저장·적중·명시적/보상 무효화·TTL·손상값 복구·Redis 장애 중 조회와 보상 재생 검증
+- `PlayerGrainTests`: 캐시 저장·적중·명시적/보상 무효화·TTL·손상값 복구·Redis 장애 중 조회와 보상 재생·연속 페이지 지표 제외 검증
 
 삭제한 공개 함수나 데이터베이스 열은 없습니다. 새 DB Migration(마이그레이션)도 없습니다.
 
@@ -180,16 +180,17 @@ Player ID를 태그로 넣지 않았습니다. Player마다 새 시계열이 생
 - PlayerGrain 통합 테스트: 실제 PostgreSQL과 실제 Redis에서 Cache Hit, TTL, 무효화, 손상 JSON 폐기와 재채움
 - 장애 통합 테스트: Redis가 연결될 수 없는 별도 TestCluster에서도 PostgreSQL 조회, 보상 지급, 동일 요청 Replay 유지
 - HTTP 통합 테스트: 토큰 없음 401, 다른 Player 403, 본인 200, 입력 오류 400, 닉네임 변경 뒤 실제 Redis Key 삭제
+- 지표 통합 테스트: 캐시 대상인 첫 페이지 DB 조회만 `database_fill_duration`에 기록하고 연속 페이지는 제외
 
 직접 Controller를 호출하는 단위 테스트만으로는 JWT Middleware(미들웨어)를 증명할 수 없습니다. 그래서 `WebApplicationFactory`로 실제 ASP.NET Core 요청 파이프라인을 통과하는 테스트를 추가했습니다.
 
 ## 12. 2026-09-16 검증 결과
 
 - `dotnet build CoopGameServer.slnx --configuration Release --no-incremental`: 경고 0개, 오류 0개
-- `dotnet test CoopGameServer.slnx --configuration Release --no-build`: 단위 110개, 통합 129개, 총 239개 통과
+- `dotnet test CoopGameServer.slnx --configuration Release --no-build`: 단위 110개, 통합 130개, 총 240개 통과
 - 통합 테스트는 Testcontainers가 만든 PostgreSQL과 Redis를 사용합니다.
 - 별도 Orleans TestCluster에 닫힌 Redis 포트를 주입해 조회 Fallback, 보상 지급, 같은 요청 Replay를 확인했습니다.
-- 손상 JSON 복구와 닉네임 변경 HTTP 뒤 실제 Redis Key 삭제를 각각 확인했습니다.
+- 손상 JSON 복구, 닉네임 변경 HTTP 뒤 실제 Redis Key 삭제, 연속 페이지의 DB 채움 지표 제외를 각각 확인했습니다.
 
 전체 테스트 통과는 현재 로컬 커밋의 코드 동작을 증명합니다. 원격 Push와 GitHub Actions CI(Continuous Integration, 지속적 통합)는 별도 상태입니다.
 

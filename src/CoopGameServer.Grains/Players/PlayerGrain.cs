@@ -247,11 +247,10 @@ public sealed class PlayerGrain : Grain, IPlayerGrain
             player.CreatedAt,
             player.UpdatedAt);
 
-        PlayerProgressionCacheMetrics.RecordDatabaseFillDuration(
-            Stopwatch.GetElapsedTime(databaseStartedAt).TotalMilliseconds);
-
         if (isFirstPage)
         {
+            PlayerProgressionCacheMetrics.RecordDatabaseFillDuration(
+                Stopwatch.GetElapsedTime(databaseStartedAt).TotalMilliseconds);
             await _progressionCache.WriteFirstPageAsync(playerId, query.PageSize, result);
         }
 

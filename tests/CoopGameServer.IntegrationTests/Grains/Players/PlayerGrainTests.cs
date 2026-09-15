@@ -1,3 +1,4 @@
+using System.Diagnostics.Metrics;
 using CoopGameServer.GrainContracts.GameRooms;
 using CoopGameServer.GrainContracts.Players;
 using CoopGameServer.IntegrationTests.Infrastructure;
@@ -419,6 +420,41 @@ public sealed class PlayerGrainTests(OrleansTestClusterFixture fixture)
 
         Assert.Equal(300, cached.Gold);
         Assert.Equal(301, afterExpiration.Gold);
+    }
+
+    [Fact]
+    public async Task ContinuationPageDoesNotRecordCacheDatabaseFillDuration()
+    {
+        var playerId = Guid.NewGuid();
+        await _fixture.RegisterPlayersAsync(playerId);
+        var player = GetPlayer(playerId);
+        await player.GrantAdminRewardAsync(
+            new GrantPlayerRewardCommand(Guid.NewGuid(), 0, 6101, 1, "first-page-item"));
+        await player.GrantAdminRewardAsync(
+            new GrantPlayerRewardCommand(Guid.NewGuid(), 0, 6102, 1, "second-page-item"));
+
+        var databaseFillCount = 0;
+        using var listener = new MeterListener();
+        listener.InstrumentPublished = (instrument, activeListener) =>
+        {
+            if (instrument.Meter.Name == "CoopGameServer.PlayerProgressionCache" &&
+                instrument.Name == "coopgame.player_progression_cache.database_fill_duration")
+            {
+                activeListener.EnableMeasurementEvents(instrument);
+            }
+        };
+        listener.SetMeasurementEventCallback<double>(
+            (_, _, _, _) => Interlocked.Increment(ref databaseFillCount));
+        listener.Start();
+
+        var firstPage = await player.GetProgressionPageAsync(
+            new GetPlayerProgressionPageQuery(PageSize: 1, ContinuationToken: null));
+        Assert.NotNull(firstPage.NextContinuationToken);
+
+        await player.GetProgressionPageAsync(
+            new GetPlayerProgressionPageQuery(PageSize: 1, firstPage.NextContinuationToken));
+
+        Assert.Equal(1, Volatile.Read(ref databaseFillCount));
     }
 
     [Fact]

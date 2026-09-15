@@ -18,6 +18,7 @@ Follow [AGENTS.md](../../AGENTS.md); recheck volatile facts.
 - Agent guide commit: `6f91409`.
 - Week 5 implementation commit: `c5ee4bc`.
 - Week 5 test commit: `2932c6d`.
+- The final metric-scope correction and documentation are included in the current HEAD.
 - Pre-existing untracked Notion review data under `CoopGameServer/notion-review/2026-09-07/` remains untouched and must stay out of task staging.
 
 ## Implemented behavior
@@ -28,14 +29,14 @@ Follow [AGENTS.md](../../AGENTS.md); recheck volatile facts.
 - Reward application, reward replay, game completion reward, and nickname change invalidate the Player cache after durable success.
 - Redis read, write, and invalidation failures do not replace PostgreSQL success or exactly-once reward evidence.
 - Cache options define the key prefix, two-minute TTL, up to twenty seconds of jitter, and a 100 ms operation timeout.
-- Metrics cover request result, fallback reason, Redis errors and duration, and database fill duration without Player ID labels.
+- Metrics cover request result, fallback reason, Redis errors and duration, and first-page database fill duration without Player ID labels.
 
 ## Validation observed now
 
 - `dotnet build CoopGameServer.slnx --configuration Release --no-incremental` passed with zero warnings and errors.
 - `dotnet test CoopGameServer.slnx --configuration Release --no-build` passed for the complete unit and integration suites.
 - Integration validation used real PostgreSQL and Redis Testcontainers.
-- Targeted tests passed for corrupt cache repair, nickname-driven key deletion, and Redis-unavailable query, reward, and replay behavior.
+- Targeted tests passed for corrupt cache repair, nickname-driven key deletion, Redis-unavailable query/reward/replay behavior, and continuation-page metric exclusion.
 - Task C# files pass `dotnet format --verify-no-changes` when scoped with `--include`.
 - Repository-wide format verification still reports pre-existing line-ending, encoding, and import-order findings outside this task. Do not normalize unrelated files as part of Week 5.
 
@@ -48,6 +49,6 @@ Follow [AGENTS.md](../../AGENTS.md); recheck volatile facts.
 
 ## Next action
 
-Push the four local commits only within explicit authorization, then bind remote CI evidence
+Push the local commits only within explicit authorization, then bind remote CI evidence
 to the pushed commit. Start Week 6 from the accepted roadmap after preserving this cache
 correctness boundary.
