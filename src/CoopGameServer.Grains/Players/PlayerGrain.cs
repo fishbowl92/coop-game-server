@@ -1,8 +1,10 @@
 using System.Data;
+using System.Diagnostics;
 using System.Globalization;
 using System.Text;
 using CoopGameServer.GrainContracts.GameRooms;
 using CoopGameServer.GrainContracts.Players;
+using CoopGameServer.Grains.Players.Caching;
 using CoopGameServer.Persistence;
 using CoopGameServer.Persistence.Rewards;
 using Microsoft.EntityFrameworkCore;
@@ -30,19 +32,21 @@ public sealed class PlayerGrain : Grain, IPlayerGrain
 
     private readonly IRewardWriter _rewardWriter;
     private readonly IDbContextFactory<GameDbContext> _gameDbContextFactory;
+    private readonly IPlayerProgressionCache _progressionCache;
 
-    /// <summary>보상 영속성 경계와 호출별 DB 조회 Context Factory를 주입받습니다.</summary>
-    /// <param name="rewardWriter">보상 감사 이력·지갑·인벤토리를 원자적으로 변경하는 Writer입니다.</param>
-    /// <param name="gameDbContextFactory">진행도 조회마다 독립적인 DbContext를 만드는 Factory입니다.</param>
+    /// <summary>보상 영속성, DB 조회와 Redis 캐시 경계를 주입받습니다.</summary>
     public PlayerGrain(
         IRewardWriter rewardWriter,
-        IDbContextFactory<GameDbContext> gameDbContextFactory)
+        IDbContextFactory<GameDbContext> gameDbContextFactory,
+        IPlayerProgressionCache progressionCache)
     {
         ArgumentNullException.ThrowIfNull(rewardWriter);
         ArgumentNullException.ThrowIfNull(gameDbContextFactory);
+        ArgumentNullException.ThrowIfNull(progressionCache);
 
         _rewardWriter = rewardWriter;
         _gameDbContextFactory = gameDbContextFactory;
+        _progressionCache = progressionCache;
     }
 
     /// <inheritdoc />
@@ -60,7 +64,7 @@ public sealed class PlayerGrain : Grain, IPlayerGrain
         // 호출이 시작된 보상은 DB 성공·업무 거부·기반시설 예외 중 하나로 끝까지 확정합니다.
         var writeResult = await _rewardWriter.WriteAsync(writeCommand);
 
-        return writeResult.Error switch
+        var result = writeResult.Error switch
         {
             RewardWriteError.None => Applied(writeCommand, writeResult),
             RewardWriteError.PlayerNotFound => Rejected(PlayerRewardCommandError.PlayerNotFound),
@@ -68,6 +72,14 @@ public sealed class PlayerGrain : Grain, IPlayerGrain
             _ => throw new InvalidOperationException(
                 $"지원하지 않는 보상 쓰기 오류입니다: {writeResult.Error}"),
         };
+
+        if (writeResult.Error == RewardWriteError.None)
+        {
+            // 재생 응답도 삭제합니다. 이전 시도가 DB Commit 뒤 캐시 삭제 전에 끊겼을 수 있기 때문입니다.
+            await _progressionCache.InvalidateAsync(playerId);
+        }
+
+        return result;
     }
 
     /// <inheritdoc />
@@ -109,7 +121,7 @@ public sealed class PlayerGrain : Grain, IPlayerGrain
             reward.Reason);
         var writeResult = await _rewardWriter.WriteAsync(writeCommand);
 
-        return writeResult.Error switch
+        var result = writeResult.Error switch
         {
             RewardWriteError.None => Applied(writeCommand, writeResult),
             RewardWriteError.PlayerNotFound => Rejected(PlayerRewardCommandError.PlayerNotFound),
@@ -117,6 +129,14 @@ public sealed class PlayerGrain : Grain, IPlayerGrain
             _ => throw new InvalidOperationException(
                 $"지원하지 않는 보상 쓰기 오류입니다: {writeResult.Error}"),
         };
+
+        if (writeResult.Error == RewardWriteError.None)
+        {
+            // 재생 응답도 삭제합니다. 이전 시도가 DB Commit 뒤 캐시 삭제 전에 끊겼을 수 있기 때문입니다.
+            await _progressionCache.InvalidateAsync(playerId);
+        }
+
+        return result;
     }
 
     /// <inheritdoc />
@@ -139,6 +159,30 @@ public sealed class PlayerGrain : Grain, IPlayerGrain
             return ProgressionFailure(PlayerProgressionQueryError.PlayerNotFound);
         }
 
+        var isFirstPage = query.ContinuationToken is null;
+        if (isFirstPage)
+        {
+            var cacheRead = await _progressionCache.ReadFirstPageAsync(playerId, query.PageSize);
+            if (cacheRead is
+                {
+                    Status: PlayerProgressionCacheReadStatus.Hit,
+                    Value: not null,
+                })
+            {
+                return cacheRead.Value;
+            }
+
+            var fallbackReason = cacheRead.Status switch
+            {
+                PlayerProgressionCacheReadStatus.Miss => "miss",
+                PlayerProgressionCacheReadStatus.Error => "error",
+                PlayerProgressionCacheReadStatus.Corrupt => "corrupt",
+                _ => "unknown",
+            };
+            PlayerProgressionCacheMetrics.RecordFallback(fallbackReason);
+        }
+
+        var databaseStartedAt = Stopwatch.GetTimestamp();
         await using var gameDbContext = await _gameDbContextFactory.CreateDbContextAsync();
 
         // 아래 세 SELECT가 서로 다른 시점의 값을 섞지 않도록 PostgreSQL의 반복 읽기 스냅샷으로 묶습니다.
@@ -146,11 +190,19 @@ public sealed class PlayerGrain : Grain, IPlayerGrain
         await using var readTransaction = await gameDbContext.Database.BeginTransactionAsync(
             IsolationLevel.RepeatableRead);
 
-        var playerExists = await gameDbContext.Players
+        var player = await gameDbContext.Players
             .AsNoTracking()
-            .AnyAsync(player => player.Id == playerId);
+            .Where(entity => entity.Id == playerId)
+            .Select(entity => new
+            {
+                entity.Id,
+                entity.Nickname,
+                entity.CreatedAt,
+                entity.UpdatedAt,
+            })
+            .SingleOrDefaultAsync();
 
-        if (!playerExists)
+        if (player is null)
         {
             await readTransaction.CommitAsync();
             return ProgressionFailure(PlayerProgressionQueryError.PlayerNotFound);
@@ -185,11 +237,34 @@ public sealed class PlayerGrain : Grain, IPlayerGrain
             ? EncodeContinuationToken(pageItems[^1].ItemId)
             : null;
 
-        return new PlayerProgressionPageResult(
+        var result = new PlayerProgressionPageResult(
             PlayerProgressionQueryError.None,
             gold,
             pageItems,
-            nextContinuationToken);
+            nextContinuationToken,
+            player.Id,
+            player.Nickname,
+            player.CreatedAt,
+            player.UpdatedAt);
+
+        PlayerProgressionCacheMetrics.RecordDatabaseFillDuration(
+            Stopwatch.GetElapsedTime(databaseStartedAt).TotalMilliseconds);
+
+        if (isFirstPage)
+        {
+            await _progressionCache.WriteFirstPageAsync(playerId, query.PageSize, result);
+        }
+
+        return result;
+    }
+
+    /// <inheritdoc />
+    public Task InvalidateProgressionCacheAsync()
+    {
+        var playerId = this.GetPrimaryKey();
+        return playerId == Guid.Empty
+            ? Task.CompletedTask
+            : _progressionCache.InvalidateAsync(playerId);
     }
 
     /// <summary>관리자 Grain 계약을 검증하고 정규화된 Persistence 명령으로 변환합니다.</summary>
@@ -324,7 +399,11 @@ public sealed class PlayerGrain : Grain, IPlayerGrain
             error,
             Gold: 0,
             Items: [],
-            NextContinuationToken: null);
+            NextContinuationToken: null,
+            PlayerId: Guid.Empty,
+            Nickname: null,
+            CreatedAt: default,
+            UpdatedAt: default);
     }
 
     /// <summary>마지막 Item ID를 버전이 포함된 불투명 Base64Url 토큰으로 변환합니다.</summary>

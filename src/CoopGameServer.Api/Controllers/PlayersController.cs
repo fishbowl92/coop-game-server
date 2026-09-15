@@ -1,9 +1,10 @@
+using CoopGameServer.Api.Application.Rewards;
 using CoopGameServer.Api.Authentication;
 using CoopGameServer.Contracts.Players;
-using CoopGameServer.Domain.Accounts;
 using CoopGameServer.Domain.Players;
-using Microsoft.AspNetCore.Authorization;
+using CoopGameServer.GrainContracts.Players;
 using CoopGameServer.Persistence;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
@@ -17,15 +18,29 @@ namespace CoopGameServer.Api.Controllers;
 [Route("api/players")]
 public sealed class PlayersController : ControllerBase
 {
-    private readonly GameDbContext _gameDbContext;
+    private static readonly Action<ILogger, Guid, Exception?> CacheInvalidationFailureLog =
+        LoggerMessage.Define<Guid>(
+            LogLevel.Warning,
+            new EventId(1, nameof(CacheInvalidationFailureLog)),
+            "Nickname was saved but progression cache invalidation failed for player {PlayerId}.");
 
-    /// <summary>
-    /// 요청 범위의 데이터베이스 작업 객체를 주입받습니다.
-    /// </summary>
-    /// <param name="gameDbContext">players 테이블을 읽고 쓰는 EF Core 작업 객체입니다.</param>
-    public PlayersController(GameDbContext gameDbContext)
+    private readonly GameDbContext _gameDbContext;
+    private readonly IPlayerGrainClient _playerGrainClient;
+    private readonly ILogger<PlayersController> _logger;
+
+    /// <summary>프로필 DB 작업과 PlayerGrain 호출 경계를 주입받습니다.</summary>
+    public PlayersController(
+        GameDbContext gameDbContext,
+        IPlayerGrainClient playerGrainClient,
+        ILogger<PlayersController> logger)
     {
+        ArgumentNullException.ThrowIfNull(gameDbContext);
+        ArgumentNullException.ThrowIfNull(playerGrainClient);
+        ArgumentNullException.ThrowIfNull(logger);
+
         _gameDbContext = gameDbContext;
+        _playerGrainClient = playerGrainClient;
+        _logger = logger;
     }
 
     /// <summary>
@@ -117,6 +132,64 @@ public sealed class PlayersController : ControllerBase
         return player is null ? NotFound() : Ok(ToResponse(player));
     }
 
+    /// <summary>인증된 플레이어의 프로필·골드·인벤토리를 한 번에 조회합니다.</summary>
+    [HttpGet("{playerId:guid}/progression")]
+    [Authorize]
+    [ProducesResponseType(typeof(PlayerProgressionResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status403Forbidden)]
+    public async Task<ActionResult<PlayerProgressionResponse>> GetPlayerProgression(
+        Guid playerId,
+        [FromQuery] int pageSize = 20,
+        [FromQuery] string? continuationToken = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (!User.CanAccessPlayer(playerId))
+        {
+            return Forbid();
+        }
+
+        var query = new GetPlayerProgressionPageQuery(pageSize, continuationToken);
+        var result = await _playerGrainClient
+            .GetProgressionPageAsync(playerId, query)
+            .WaitAsync(cancellationToken);
+
+        if (result.Error == PlayerProgressionQueryError.PlayerNotFound)
+        {
+            return NotFound();
+        }
+
+        if (result.Error is
+            PlayerProgressionQueryError.InvalidPageSize or
+            PlayerProgressionQueryError.InvalidContinuationToken)
+        {
+            return ValidationProblem(
+                detail: result.Error == PlayerProgressionQueryError.InvalidPageSize
+                    ? "pageSize는 1 이상 100 이하여야 합니다."
+                    : "continuationToken 형식이 올바르지 않습니다.",
+                statusCode: StatusCodes.Status400BadRequest);
+        }
+
+        if (result.Error != PlayerProgressionQueryError.None || result.Nickname is null)
+        {
+            throw new InvalidOperationException($"지원하지 않는 진행도 조회 결과입니다: {result.Error}");
+        }
+
+        var response = new PlayerProgressionResponse(
+            result.PlayerId,
+            result.Nickname,
+            result.CreatedAt,
+            result.UpdatedAt,
+            result.Gold,
+            result.Items
+                .Select(item => new PlayerInventoryItemResponse(item.ItemId, item.Quantity))
+                .ToArray(),
+            result.NextContinuationToken);
+
+        return Ok(response);
+    }
+
     /// <summary>
     /// 기존 플레이어의 닉네임을 변경하고 수정 시각을 갱신합니다.
     /// </summary>
@@ -186,6 +259,16 @@ public sealed class PlayersController : ControllerBase
                 Detail = "이미 사용 중인 닉네임입니다.",
                 Status = StatusCodes.Status409Conflict,
             });
+        }
+
+        try
+        {
+            // DB Commit 뒤 삭제합니다. Redis 실패로 이미 성공한 PostgreSQL 변경을 되돌리지 않습니다.
+            await _playerGrainClient.InvalidateProgressionCacheAsync(playerId);
+        }
+        catch (Exception exception)
+        {
+            CacheInvalidationFailureLog(_logger, playerId, exception);
         }
 
         return Ok(ToResponse(player));

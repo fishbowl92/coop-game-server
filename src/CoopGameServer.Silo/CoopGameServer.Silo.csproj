@@ -1,13 +1,11 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <!-- 장시간 실행되는 Orleans 서버의 처리량에 맞는 Server GC를 사용합니다. -->
     <ServerGarbageCollection>true</ServerGarbageCollection>
-    <!-- Api와 Silo가 같은 로컬 GameDb 연결 문자열을 읽도록 User Secrets 저장소를 공유합니다. -->
     <UserSecretsId>91eecbce-ee39-4d00-8c89-1bf661eca078</UserSecretsId>
   </PropertyGroup>
 
@@ -21,6 +19,12 @@
     <ProjectReference Include="..\CoopGameServer.Grains\CoopGameServer.Grains.csproj" />
     <ProjectReference Include="..\CoopGameServer.GrainContracts\CoopGameServer.GrainContracts.csproj" />
     <ProjectReference Include="..\CoopGameServer.Persistence\CoopGameServer.Persistence.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="appsettings.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
   </ItemGroup>
 
 </Project>

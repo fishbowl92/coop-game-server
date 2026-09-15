@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
@@ -7,7 +7,6 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- 외부 서버를 실행하지 않고 내부 상태 전이를 단위 테스트합니다. -->
     <InternalsVisibleTo Include="CoopGameServer.UnitTests" />
     <InternalsVisibleTo Include="CoopGameServer.IntegrationTests" />
   </ItemGroup>
@@ -16,11 +15,11 @@
     <PackageReference Include="Microsoft.EntityFrameworkCore" Version="10.0.11" />
     <PackageReference Include="Microsoft.Orleans.Server" Version="10.2.2" />
     <PackageReference Include="Npgsql" Version="10.0.3" />
+    <PackageReference Include="StackExchange.Redis" Version="3.2.0" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\CoopGameServer.GrainContracts\CoopGameServer.GrainContracts.csproj" />
-    <!-- Grain이 DB 계층을 거치지 않고 순수 전투 규칙을 직접 사용합니다. -->
     <ProjectReference Include="..\CoopGameServer.Domain\CoopGameServer.Domain.csproj" />
     <ProjectReference Include="..\CoopGameServer.Persistence\CoopGameServer.Persistence.csproj" />
   </ItemGroup>
