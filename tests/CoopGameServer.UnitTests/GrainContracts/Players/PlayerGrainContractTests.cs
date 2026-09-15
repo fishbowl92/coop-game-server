@@ -22,8 +22,8 @@ public sealed class PlayerGrainContractTests
 
         var methods = typeof(IPlayerGrain).GetMethods(BindingFlags.Public | BindingFlags.Instance);
 
-        // 현재 설계에서 허용한 세 계약만 노출하고, HTTP 요청 수명에 묶인 취소 토큰은 넣지 않습니다.
-        Assert.Equal(3, methods.Length);
+        // 네 계약 모두 HTTP 요청 수명에 묶인 취소 토큰을 Grain 안으로 전달하지 않습니다.
+        Assert.Equal(4, methods.Length);
         Assert.DoesNotContain(
             methods.SelectMany(method => method.GetParameters()),
             parameter => parameter.ParameterType == typeof(CancellationToken));
@@ -34,6 +34,7 @@ public sealed class PlayerGrainContractTests
             nameof(IPlayerGrain.CompleteGameAsync));
         AssertMethod<GetPlayerProgressionPageQuery, PlayerProgressionPageResult>(
             nameof(IPlayerGrain.GetProgressionPageAsync));
+        AssertParameterlessTaskMethod(nameof(IPlayerGrain.InvalidateProgressionCacheAsync));
     }
 
     [Fact]
@@ -78,7 +79,11 @@ public sealed class PlayerGrainContractTests
             (nameof(PlayerProgressionPageResult.Error), 0),
             (nameof(PlayerProgressionPageResult.Gold), 1),
             (nameof(PlayerProgressionPageResult.Items), 2),
-            (nameof(PlayerProgressionPageResult.NextContinuationToken), 3));
+            (nameof(PlayerProgressionPageResult.NextContinuationToken), 3),
+            (nameof(PlayerProgressionPageResult.PlayerId), 4),
+            (nameof(PlayerProgressionPageResult.Nickname), 5),
+            (nameof(PlayerProgressionPageResult.CreatedAt), 6),
+            (nameof(PlayerProgressionPageResult.UpdatedAt), 7));
 
         AssertSerializerIds<PlayerInventoryItemSnapshot>(
             (nameof(PlayerInventoryItemSnapshot.ItemId), 0),
@@ -155,7 +160,11 @@ public sealed class PlayerGrainContractTests
             PlayerProgressionQueryError.None,
             500,
             items,
-            "next-page");
+            "next-page",
+            playerId,
+            "ContractPlayer",
+            createdAt,
+            createdAt);
 
         Assert.Equal(requestId, result.Receipt?.RequestId);
         Assert.Equal(playerId, result.Receipt?.PlayerId);
@@ -175,6 +184,19 @@ public sealed class PlayerGrainContractTests
 
         Assert.NotNull(method);
         Assert.Equal(typeof(Task<TResult>), method.ReturnType);
+    }
+
+    private static void AssertParameterlessTaskMethod(string methodName)
+    {
+        var method = typeof(IPlayerGrain).GetMethod(
+            methodName,
+            BindingFlags.Public | BindingFlags.Instance,
+            binder: null,
+            types: Type.EmptyTypes,
+            modifiers: null);
+
+        Assert.NotNull(method);
+        Assert.Equal(typeof(Task), method.ReturnType);
     }
 
     private static void AssertSerializerIds<T>(params (string PropertyName, int Id)[] expectedProperties)

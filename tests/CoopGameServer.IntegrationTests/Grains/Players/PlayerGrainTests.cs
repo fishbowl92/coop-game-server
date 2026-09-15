@@ -3,6 +3,7 @@ using CoopGameServer.GrainContracts.Players;
 using CoopGameServer.IntegrationTests.Infrastructure;
 using Microsoft.EntityFrameworkCore;
 using Orleans.TestingHost;
+using StackExchange.Redis;
 
 namespace CoopGameServer.IntegrationTests.Grains.Players;
 
@@ -329,6 +330,169 @@ public sealed class PlayerGrainTests(OrleansTestClusterFixture fixture)
 
         Assert.Equal(PlayerProgressionQueryError.PlayerNotFound, missingPlayer.Error);
         Assert.Empty(missingPlayer.Items);
+    }
+
+    [Fact]
+    public async Task FirstPageUsesCachedSnapshotUntilExplicitInvalidation()
+    {
+        var playerId = Guid.NewGuid();
+        await _fixture.RegisterPlayersAsync(playerId);
+        var player = GetPlayer(playerId);
+        await player.GrantAdminRewardAsync(
+            new GrantPlayerRewardCommand(Guid.NewGuid(), 100, null, null, "cache-hit"));
+
+        var cached = await player.GetProgressionPageAsync(
+            new GetPlayerProgressionPageQuery(PageSize: 20, ContinuationToken: null));
+
+        await using var redis = await ConnectionMultiplexer.ConnectAsync(_fixture.RedisConnectionString);
+        var cachedJson = await redis.GetDatabase().HashGetAsync(
+            $"coopgame:test:player-progression:v1:{playerId:N}",
+            "first:20");
+        Assert.False(cachedJson.IsNullOrEmpty, "첫 DB 조회 뒤 Redis에 캐시 값이 저장되어야 합니다.");
+
+        // Redis를 거치지 않는 직접 DB 변경으로 캐시와 원본을 의도적으로 다르게 만듭니다.
+        await using (var gameDbContext = _fixture.CreateDbContext())
+        {
+            var wallet = await gameDbContext.PlayerWallets.SingleAsync(
+                entity => entity.PlayerId == playerId);
+            wallet.AddGold(999, DateTimeOffset.UtcNow);
+            await gameDbContext.SaveChangesAsync();
+        }
+
+        var cacheHit = await player.GetProgressionPageAsync(
+            new GetPlayerProgressionPageQuery(PageSize: 20, ContinuationToken: null));
+
+        Assert.Equal(100, cached.Gold);
+        Assert.Equal(100, cacheHit.Gold);
+
+        await player.InvalidateProgressionCacheAsync();
+        var afterInvalidation = await player.GetProgressionPageAsync(
+            new GetPlayerProgressionPageQuery(PageSize: 20, ContinuationToken: null));
+
+        Assert.Equal(1099, afterInvalidation.Gold);
+    }
+
+    [Fact]
+    public async Task AppliedRewardInvalidatesPreviouslyCachedProgression()
+    {
+        var playerId = Guid.NewGuid();
+        await _fixture.RegisterPlayersAsync(playerId);
+        var player = GetPlayer(playerId);
+
+        var beforeReward = await player.GetProgressionPageAsync(
+            new GetPlayerProgressionPageQuery(PageSize: 20, ContinuationToken: null));
+        await player.GrantAdminRewardAsync(
+            new GrantPlayerRewardCommand(Guid.NewGuid(), 250, 4101, 2, "cache-invalidation"));
+        var afterReward = await player.GetProgressionPageAsync(
+            new GetPlayerProgressionPageQuery(PageSize: 20, ContinuationToken: null));
+
+        Assert.Equal(0, beforeReward.Gold);
+        Assert.Equal(250, afterReward.Gold);
+        Assert.Contains(afterReward.Items, item => item.ItemId == 4101 && item.Quantity == 2);
+    }
+
+    [Fact]
+    public async Task ExpiredFirstPageIsFilledAgainFromPostgreSql()
+    {
+        var playerId = Guid.NewGuid();
+        await _fixture.RegisterPlayersAsync(playerId);
+        var player = GetPlayer(playerId);
+        await player.GrantAdminRewardAsync(
+            new GrantPlayerRewardCommand(Guid.NewGuid(), 300, null, null, "cache-expiration"));
+
+        var cached = await player.GetProgressionPageAsync(
+            new GetPlayerProgressionPageQuery(PageSize: 20, ContinuationToken: null));
+
+        await using (var gameDbContext = _fixture.CreateDbContext())
+        {
+            var wallet = await gameDbContext.PlayerWallets.SingleAsync(
+                entity => entity.PlayerId == playerId);
+            wallet.AddGold(1, DateTimeOffset.UtcNow);
+            await gameDbContext.SaveChangesAsync();
+        }
+
+        // TestCluster의 캐시 TTL 5초가 지나 Redis Hash가 자동 삭제될 때까지 기다립니다.
+        await Task.Delay(TimeSpan.FromMilliseconds(5500));
+
+        var afterExpiration = await player.GetProgressionPageAsync(
+            new GetPlayerProgressionPageQuery(PageSize: 20, ContinuationToken: null));
+
+        Assert.Equal(300, cached.Gold);
+        Assert.Equal(301, afterExpiration.Gold);
+    }
+
+    [Fact]
+    public async Task CorruptFirstPageIsDiscardedAndFilledAgainFromPostgreSql()
+    {
+        var playerId = Guid.NewGuid();
+        await _fixture.RegisterPlayersAsync(playerId);
+        var player = GetPlayer(playerId);
+        await player.GrantAdminRewardAsync(
+            new GrantPlayerRewardCommand(Guid.NewGuid(), 520, null, null, "corrupt-cache"));
+
+        await using var redis = await ConnectionMultiplexer.ConnectAsync(_fixture.RedisConnectionString);
+        var database = redis.GetDatabase();
+        var cacheKey = $"coopgame:test:player-progression:v1:{playerId:N}";
+        await database.HashSetAsync(cacheKey, "first:20", "{not-valid-json");
+
+        var result = await player.GetProgressionPageAsync(
+            new GetPlayerProgressionPageQuery(PageSize: 20, ContinuationToken: null));
+        var repairedJson = await database.HashGetAsync(cacheKey, "first:20");
+
+        Assert.Equal(PlayerProgressionQueryError.None, result.Error);
+        Assert.Equal(520, result.Gold);
+        Assert.False(repairedJson.IsNullOrEmpty);
+        Assert.NotEqual("{not-valid-json", repairedJson.ToString());
+    }
+
+    [Fact]
+    public async Task RedisOutageFallsBackToPostgreSqlAndDoesNotFailProgression()
+    {
+        var playerId = Guid.NewGuid();
+        await _fixture.RegisterPlayersAsync(playerId);
+        await GetPlayer(playerId).GrantAdminRewardAsync(
+            new GrantPlayerRewardCommand(Guid.NewGuid(), 450, null, null, "redis-outage"));
+
+        // 공유 Redis를 중지하면 다른 테스트의 연결까지 오염됩니다. 별도 TestCluster에 닫힌 포트를
+        // 주입해 Redis 연결 실패를 재현하고, 같은 PostgreSQL 원본을 읽는지만 독립적으로 검증합니다.
+        var clusterBuilder = new TestClusterBuilder();
+        clusterBuilder.Properties[OrleansTestClusterFixture.GameDbConnectionStringKey] =
+            _fixture.GameDbConnectionString;
+        clusterBuilder.Properties[OrleansTestClusterFixture.RedisConnectionStringKey] =
+            "127.0.0.1:1";
+        clusterBuilder.AddSiloBuilderConfigurator<OrleansTestSiloConfigurator>();
+
+        using var unavailableRedisCluster = clusterBuilder.Build();
+        await unavailableRedisCluster.DeployAsync();
+
+        try
+        {
+            var isolatedPlayer = unavailableRedisCluster.Client.GetGrain<IPlayerGrain>(playerId);
+            var rewardCommand = new GrantPlayerRewardCommand(
+                Guid.NewGuid(),
+                25,
+                null,
+                null,
+                "redis-outage-reward");
+            var firstReward = await isolatedPlayer.GrantAdminRewardAsync(rewardCommand);
+            var replayReward = await isolatedPlayer.GrantAdminRewardAsync(rewardCommand);
+            var result = await isolatedPlayer.GetProgressionPageAsync(
+                new GetPlayerProgressionPageQuery(PageSize: 20, ContinuationToken: null));
+
+            Assert.Equal(PlayerRewardCommandStatus.Applied, firstReward.Status);
+            Assert.False(firstReward.IsReplay);
+            Assert.Equal(PlayerRewardCommandStatus.Applied, replayReward.Status);
+            Assert.True(replayReward.IsReplay);
+            Assert.Equal(firstReward.Receipt?.RewardAuditId, replayReward.Receipt?.RewardAuditId);
+            Assert.Equal(PlayerProgressionQueryError.None, result.Error);
+            Assert.Equal(playerId, result.PlayerId);
+            Assert.NotNull(result.Nickname);
+            Assert.Equal(475, result.Gold);
+        }
+        finally
+        {
+            await unavailableRedisCluster.StopAllSilosAsync();
+        }
     }
 
     [Fact]

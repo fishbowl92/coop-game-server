@@ -8,15 +8,12 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- 실제 PostgreSQL Docker 컨테이너를 테스트 중 생성하고 폐기하는 라이브러리입니다. -->
     <PackageReference Include="Testcontainers.PostgreSql" Version="4.14.0" />
-    <!-- Testcontainers의 간접 의존성에서 발견된 취약한 SSH.NET 버전을 수정 버전으로 고정합니다. -->
+    <PackageReference Include="Testcontainers.Redis" Version="4.14.0" />
     <PackageReference Include="SSH.NET" Version="2026.0.0" />
     <PackageReference Include="coverlet.collector" Version="6.0.4" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
-    <!-- Controller 직접 호출이 아니라 실제 HTTP 라우팅·JWT·호출 제한을 검사합니다. -->
     <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.11" />
-    <!-- 실제 외부 Silo 없이 테스트 프로세스 안에서 PartyGrain을 호출하기 위한 Orleans 테스트 호스트입니다. -->
     <PackageReference Include="Microsoft.Orleans.TestingHost" Version="10.2.2" />
     <PackageReference Include="xunit" Version="2.9.3" />
     <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
@@ -27,17 +24,10 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- 인증 서비스와 HTTP Controller 통합 테스트를 위해 API 프로젝트를 참조합니다. -->
     <ProjectReference Include="..\..\src\CoopGameServer.Api\CoopGameServer.Api.csproj" />
-
-    <!-- 테스트가 실제 API 요청과 같은 보상 계약을 사용하도록 Contracts 프로젝트를 직접 참조합니다. -->
     <ProjectReference Include="..\..\src\CoopGameServer.Contracts\CoopGameServer.Contracts.csproj" />
-
-    <!-- 게임 규칙과 EF Core 매핑·마이그레이션을 각 책임 프로젝트에서 직접 참조합니다. -->
     <ProjectReference Include="..\..\src\CoopGameServer.Domain\CoopGameServer.Domain.csproj" />
     <ProjectReference Include="..\..\src\CoopGameServer.Persistence\CoopGameServer.Persistence.csproj" />
-
-    <!-- PartyGrain의 호출 계약과 실제 구현을 TestCluster에 함께 제공합니다. -->
     <ProjectReference Include="..\..\src\CoopGameServer.GrainContracts\CoopGameServer.GrainContracts.csproj" />
     <ProjectReference Include="..\..\src\CoopGameServer.Grains\CoopGameServer.Grains.csproj" />
   </ItemGroup>

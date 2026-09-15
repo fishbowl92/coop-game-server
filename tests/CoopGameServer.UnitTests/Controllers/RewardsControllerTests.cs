@@ -166,5 +166,12 @@ public sealed class RewardsControllerTests
         {
             return grantHandler(playerId, command);
         }
+
+        public Task<PlayerProgressionPageResult> GetProgressionPageAsync(
+            Guid playerId,
+            GetPlayerProgressionPageQuery query) =>
+            throw new NotSupportedException();
+
+        public Task InvalidateProgressionCacheAsync(Guid playerId) => Task.CompletedTask;
     }
 }

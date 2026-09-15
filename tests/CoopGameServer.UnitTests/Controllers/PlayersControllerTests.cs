@@ -1,11 +1,14 @@
-using CoopGameServer.Api.Controllers;
 using System.Security.Claims;
+using CoopGameServer.Api.Application.Rewards;
+using CoopGameServer.Api.Controllers;
 using CoopGameServer.Contracts.Players;
 using CoopGameServer.Domain.Players;
+using CoopGameServer.GrainContracts.Players;
 using CoopGameServer.Persistence;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace CoopGameServer.UnitTests.Controllers;
 
@@ -28,7 +31,10 @@ public sealed class PlayersControllerTests
         await using var gameDbContext = new GameDbContext(options);
         // [Authorize] 특성 자체는 ASP.NET Core HTTP 파이프라인에서 실행됩니다.
         // 이 테스트는 Controller의 생성·저장 책임만 직접 검증하므로 별도 인증 주입이 필요 없습니다.
-        var controller = new PlayersController(gameDbContext);
+        var controller = new PlayersController(
+            gameDbContext,
+            new StubPlayerGrainClient(),
+            NullLogger<PlayersController>.Instance);
 
         var actionResult = await controller.CreatePlayer(
             new CreatePlayerRequest("  Minwoo  "),
@@ -61,7 +67,8 @@ public sealed class PlayersControllerTests
         gameDbContext.Players.Add(player);
         await gameDbContext.SaveChangesAsync();
 
-        var controller = CreateController(gameDbContext, player.Id);
+        var grainClient = new StubPlayerGrainClient();
+        var controller = CreateController(gameDbContext, player.Id, grainClient);
         var actionResult = await controller.UpdatePlayerNickname(
             player.Id,
             new UpdatePlayerNicknameRequest("  AfterRename  "),
@@ -80,6 +87,33 @@ public sealed class PlayersControllerTests
         Assert.Equal("AfterRename", savedPlayer.Nickname);
         Assert.Equal(createdAt, savedPlayer.CreatedAt);
         Assert.Equal(response.UpdatedAt, savedPlayer.UpdatedAt);
+        Assert.Equal(player.Id, grainClient.InvalidatedPlayerId);
+    }
+
+    [Fact]
+    public async Task UpdatePlayerNicknameKeepsDatabaseSuccessWhenCacheInvalidationFails()
+    {
+        var options = CreateInMemoryOptions();
+        var player = new Player(Guid.NewGuid(), "BeforeFailure", DateTimeOffset.UtcNow.AddMinutes(-1));
+
+        await using var gameDbContext = new GameDbContext(options);
+        gameDbContext.Players.Add(player);
+        await gameDbContext.SaveChangesAsync();
+
+        var grainClient = new StubPlayerGrainClient
+        {
+            InvalidationException = new InvalidOperationException("simulated-grain-failure"),
+        };
+        var controller = CreateController(gameDbContext, player.Id, grainClient);
+
+        var actionResult = await controller.UpdatePlayerNickname(
+            player.Id,
+            new UpdatePlayerNicknameRequest("AfterFailure"),
+            CancellationToken.None);
+
+        Assert.IsType<OkObjectResult>(actionResult.Result);
+        Assert.Equal("AfterFailure", (await gameDbContext.Players.SingleAsync()).Nickname);
+        Assert.Equal(player.Id, grainClient.InvalidatedPlayerId);
     }
 
     [Fact]
@@ -109,7 +143,8 @@ public sealed class PlayersControllerTests
         gameDbContext.Players.Add(player);
         await gameDbContext.SaveChangesAsync();
 
-        var controller = CreateController(gameDbContext, player.Id);
+        var grainClient = new StubPlayerGrainClient();
+        var controller = CreateController(gameDbContext, player.Id, grainClient);
         var actionResult = await controller.UpdatePlayerNickname(
             player.Id,
             new UpdatePlayerNicknameRequest("   "),
@@ -164,9 +199,16 @@ public sealed class PlayersControllerTests
     /// </summary>
     /// <param name="gameDbContext">테스트용 DB 작업 객체입니다.</param>
     /// <param name="playerId">토큰의 NameIdentifier에 들어갈 현재 Player 식별자입니다.</param>
-    private static PlayersController CreateController(GameDbContext gameDbContext, Guid playerId)
+    private static PlayersController CreateController(
+        GameDbContext gameDbContext,
+        Guid playerId,
+        StubPlayerGrainClient? grainClient = null)
     {
-        var controller = new PlayersController(gameDbContext);
+        grainClient ??= new StubPlayerGrainClient();
+        var controller = new PlayersController(
+            gameDbContext,
+            grainClient,
+            NullLogger<PlayersController>.Instance);
         var identity = new ClaimsIdentity(
             [new Claim(ClaimTypes.NameIdentifier, playerId.ToString())],
             authenticationType: "test-jwt");
@@ -180,5 +222,30 @@ public sealed class PlayersControllerTests
         };
 
         return controller;
+    }
+
+    private sealed class StubPlayerGrainClient : IPlayerGrainClient
+    {
+        public Guid? InvalidatedPlayerId { get; private set; }
+
+        public Exception? InvalidationException { get; init; }
+
+        public Task<PlayerRewardCommandResult> GrantAdminRewardAsync(
+            Guid playerId,
+            GrantPlayerRewardCommand command) =>
+            throw new NotSupportedException();
+
+        public Task<PlayerProgressionPageResult> GetProgressionPageAsync(
+            Guid playerId,
+            GetPlayerProgressionPageQuery query) =>
+            throw new NotSupportedException();
+
+        public Task InvalidateProgressionCacheAsync(Guid playerId)
+        {
+            InvalidatedPlayerId = playerId;
+            return InvalidationException is null
+                ? Task.CompletedTask
+                : Task.FromException(InvalidationException);
+        }
     }
 }
