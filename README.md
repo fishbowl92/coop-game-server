@@ -2,7 +2,7 @@
 
 > Microsoft Orleans 기반 협동 게임 서비스 백엔드를 단계적으로 구현하는 C#·.NET 10 프로젝트입니다.
 
-현재는 Player 프로필·인증, 재화·인벤토리 보상, PartyGrain, MatchQueueGrain, GameRoomGrain과 PostgreSQL 영속성을 구현했습니다. 사전 구성 파티와 솔로를 정확히 4명으로 매칭하고, 공격·스킬·3웨이브 전투 결과를 서버에서 계산합니다. 인증된 HTTP 경로는 현재 연결 ID·세대를 검사하며, 연결·재접속·최초 응답·만료 기한을 저장합니다. 게임 종료 뒤 파티를 유지하고 티켓을 해제하며, Silo 재시작 뒤 만료 처리와 미완료 후처리를 재개합니다. Redis 애플리케이션 연동과 운영 배포는 아직 구현하지 않았습니다. 최신 코드의 실행 경로·검증 한계는 [4주차 구현 검토](docs/design/week-04-implementation-review.md)를 참고하세요.
+현재는 Player 프로필·인증, 재화·인벤토리 보상, PartyGrain, MatchQueueGrain, GameRoomGrain과 PostgreSQL 영속성을 구현했습니다. 사전 구성 파티와 솔로를 정확히 4명으로 매칭하고, 공격·스킬·3웨이브 전투 결과를 서버에서 계산합니다. 인증된 HTTP 경로는 현재 연결 ID·세대를 검사하며, 연결·재접속·최초 응답·만료 기한을 저장합니다. 게임 종료 뒤 파티를 유지하고 티켓을 해제하며, Silo 재시작 뒤 만료 처리와 미완료 후처리를 재개합니다. Player 진행도 첫 페이지의 Redis Cache-Aside와 장애 시 PostgreSQL 대체 조회까지 구현했으며 운영 배포는 아직 범위 밖입니다. 전투·복구는 [4주차 구현 검토](docs/design/week-04-implementation-review.md), 캐시는 [5주차 설계](docs/design/week-05-redis-progression-cache.md)를 참고하세요.
 
 ## 포트폴리오 빠른 검토
 
@@ -24,6 +24,7 @@
 - Connect·Heartbeat·Reconnect·Disconnect·StartCombat과 자기 전투 상태 조회
 - 최초 입장 기한 취소, 연결 유예 만료·전원 전투 불능 패배, 타이머·DB 복구
 - 실제 HTTP JWT 인증·인가·호출 제한을 통과하는 Orleans·PostgreSQL 통합 테스트
+- 인증된 Player 진행도 결합 API와 Redis 첫 페이지 Cache-Aside·TTL·DB fallback
 
 - 회원 가입·로그인과 비밀번호 해시 저장, JWT 접근 토큰 발급
 - Player 본인 조회·닉네임 변경과 관리자 전용 Player 생성 HTTP API
@@ -32,7 +33,7 @@
 - `requestId` 기반 보상 멱등성(Idempotency, 같은 요청을 재전송해도 한 번만 반영되는 성질)
 - 보상 이력·지갑·인벤토리를 함께 처리하는 Transaction(트랜잭션, 모두 성공하거나 모두 실패하는 작업 단위)
 - Player 행 잠금을 이용한 서로 다른 동시 보상의 유실 갱신 방지
-- xUnit 단위 테스트와 Testcontainers 기반 실제 PostgreSQL 통합 테스트
+- xUnit 단위 테스트와 Testcontainers 기반 실제 PostgreSQL·Redis 통합 테스트
 - 별도 Orleans Silo와 진단용 Ping Grain 호출
 - PartyGrain의 생성·조회·가입·탈퇴·해산·리더 승계·멱등성·PostgreSQL 영속성
 - MatchQueueGrain의 솔로·사전 구성 파티 등록, 취소, 정확히 4명 조합과 재시작 복원
@@ -47,23 +48,23 @@
 - Orleans TestCluster와 실제 PostgreSQL을 사용하는 자동 테스트
 - GitHub Actions CI(Continuous Integration, 지속적 통합) 빌드·테스트
 
-Redis(REmote DIctionary Server, 원격 딕셔너리 서버)는 현재 로컬 컨테이너만 준비되어 있습니다. 캐시·TTL(Time To Live, 자동 만료 시간)·장애 시 PostgreSQL 대체 경로는 5주차에 구현할 계획입니다.
+Redis(REmote DIctionary Server, 원격 딕셔너리 서버)는 Player 진행도 첫 페이지의 단기 캐시로 사용합니다. Redis 조회·저장·삭제가 실패하면 PostgreSQL 원본 결과를 유지하며, TTL(Time To Live, 자동 만료 시간)은 기본 2분에 최대 20초 Jitter(지터)를 더합니다.
 
 ## 요청 흐름
 
 ```text
 HTTP Client
     ├─ Auth API ──> PasswordHasher ──> PostgreSQL(accounts) ──> JWT 발급
-    ├─ Player·Reward API ──> JWT 인가 ──> EF Core ──> PostgreSQL
+    ├─ Player 프로필·Reward API ──> JWT 인가 ──> EF Core/PlayerGrain ──> PostgreSQL
+    ├─ Player 진행도 API ──> JWT 인가 ──> PlayerGrain ──> Redis Cache-Aside ──> PostgreSQL
     ├─ Party·Ping API ──> JWT 인가 ──> Orleans Client ──> Silo ──> Grain
     └─ Matchmaking·GameRoom API ──> JWT 인가 ──> Party·Queue·Room Grain ──> PostgreSQL
 
-IntegrationTests ──> Orleans TestCluster ──> Party·MatchQueue·GameRoom Grain ──> PostgreSQL
+IntegrationTests ──> Orleans TestCluster ──> Party·MatchQueue·GameRoom·Player Grain
+                                      └─> PostgreSQL + Redis Testcontainers
 
 Silo BackgroundService ──> PostgreSQL(game_results 미완료 방 조회)
                        └─> GameRoomGrain ──> PlayerGrain ──> 보상 재확인
-
-Redis: 컨테이너만 준비됨, 애플리케이션 연결은 아직 없음
 ```
 
 ## 저장소 구조
@@ -256,14 +257,15 @@ docker compose down
 - [상태 변경 요청의 멱등성 키 원칙](./docs/adr/0003-use-idempotency-keys-for-state-changing-requests.md)
 - [Player 영속성에 EF Core를 선택한 이유](./docs/adr/0004-use-ef-core-for-player-persistence.md)
 - [요청 취소·재시도 원칙](./docs/architecture/request-cancellation-and-retry.md)
+- [5주차 Redis 진행도 Cache-Aside](./docs/design/week-05-redis-progression-cache.md)
 - [로컬 실행·문제 해결 절차](./docs/runbooks/local-development.md)
 
 ## 현재 한계와 다음 목표
 
 - PingGrain은 연결 진단용이고, 실제 게임 상태는 PartyGrain·MatchQueueGrain·GameRoomGrain이 관리합니다.
 - JWT 접근 토큰은 구현했지만 갱신 토큰, 로그아웃·폐기 목록, 관리자 계정 초기화 절차는 아직 없습니다.
-- Redis는 컨테이너만 있으며 애플리케이션 코드에서 사용하지 않습니다.
+- Redis 적용 범위는 Player 진행도 첫 페이지입니다. 세션·분산 Rate Limit·멱등성 빠른 조회는 아직 적용하지 않았습니다.
 - 현재 공개 Queue는 `coop-dungeon-normal-v1` 하나입니다. 여러 Queue를 추가하기 전에는 Player 전역 매칭 예약이 필요합니다.
-- GameRoom은 최소 생명주기와 최종 결과만 있으며 공격·스킬·웨이브·재접속은 아직 없습니다.
+- GameRoom은 공격·스킬·3개 웨이브·연결·재접속·만료 복구를 구현했지만 실시간 소켓 전송과 복잡한 전투 규칙은 아직 없습니다.
 - 현재 복구 Worker는 단일 Silo 학습 범위입니다. 다중 Silo에서 중복 조회를 조정하는 Lease(임대 잠금)는 운영 확장 항목입니다.
-- 다음 핵심 기능은 게임 방 참가자 전투 상태, 기본 공격·스킬과 3개 Wave(웨이브, 전투 단계) 상태 전이입니다.
+- 다음 캐시 단계는 측정 결과에 따른 timeout·TTL 조정과 운영 지표 Exporter 연결입니다.

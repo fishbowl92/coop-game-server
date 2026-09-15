@@ -101,7 +101,7 @@ dotnet test CoopGameServer.slnx --configuration Release --no-build
 ```
 
 - 단위 테스트는 메서드·도메인 규칙을 작은 범위에서 검증합니다.
-- 통합 테스트는 Testcontainers가 별도의 임시 PostgreSQL 컨테이너를 만들어 실제 UNIQUE·Transaction·행 잠금을 검증합니다.
+- 통합 테스트는 Testcontainers가 별도의 임시 PostgreSQL·Redis 컨테이너를 만들어 실제 UNIQUE·Transaction·행 잠금과 Cache-Aside를 검증합니다.
 - 통합 테스트 컨테이너는 Compose 개발 DB와 별개이며 테스트 종료 시 폐기됩니다.
 - Docker Engine이 꺼져 있으면 단위 테스트는 가능하지만 통합 테스트는 시작 전 실패합니다.
 
@@ -112,6 +112,15 @@ dotnet run --project .\src\CoopGameServer.Silo\CoopGameServer.Silo.csproj
 ```
 
 Silo(사일로)는 Grain을 활성화하고 실행하는 Orleans 서버 프로세스입니다. `Application started` 로그가 나온 뒤 창을 열어 둡니다.
+
+Redis 기본 주소는 `src/CoopGameServer.Silo/appsettings.json`의 `127.0.0.1:6379`입니다. 포트를 바꿨다면 다음처럼 환경 변수로 덮어씁니다.
+
+```powershell
+$env:ConnectionStrings__Redis = "127.0.0.1:<변경한포트>"
+dotnet run --project .\src\CoopGameServer.Silo\CoopGameServer.Silo.csproj
+```
+
+`ConnectionStrings__Redis`의 이중 밑줄은 .NET 설정의 `ConnectionStrings:Redis`를 뜻합니다. Redis가 중지되어도 Silo는 시작되며 진행도 첫 페이지는 100ms 캐시 대기 한도 뒤 PostgreSQL에서 조회합니다.
 
 ## 7. ASP.NET Core API 실행 — PowerShell 창 B
 
