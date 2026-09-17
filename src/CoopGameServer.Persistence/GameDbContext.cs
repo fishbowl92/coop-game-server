@@ -1,4 +1,5 @@
 using CoopGameServer.Domain.Accounts;
+using CoopGameServer.Domain.Administration;
 using CoopGameServer.Domain.Inventories;
 using CoopGameServer.Domain.Players;
 using CoopGameServer.Domain.Rewards;
@@ -54,6 +55,9 @@ public sealed class GameDbContext : DbContext
     /// reward_audits 테이블에 대응하는 보상 지급 이력 집합입니다.
     /// </summary>
     public DbSet<RewardAudit> RewardAudits => Set<RewardAudit>();
+
+    /// <summary>admin_audits 테이블에 대응하는 관리자 작업 성공 이력입니다.</summary>
+    public DbSet<AdminAudit> AdminAudits => Set<AdminAudit>();
 
     /// <summary>parties 테이블에 대응하는 파티 상태 집합입니다.</summary>
     public DbSet<PartyRecord> Parties => Set<PartyRecord>();
@@ -265,9 +269,87 @@ public sealed class GameDbContext : DbContext
             .HasForeignKey(entity => entity.PlayerId)
             .OnDelete(DeleteBehavior.Restrict);
 
+        ConfigureAdminAuditPersistence(modelBuilder);
         ConfigurePartyPersistence(modelBuilder);
         ConfigureMatchQueuePersistence(modelBuilder);
         ConfigureGameRoomPersistence(modelBuilder);
+    }
+
+    /// <summary>관리자 보상과 실행 계정을 추적할 변경 불가능한 성공 감사 테이블을 구성합니다.</summary>
+    private static void ConfigureAdminAuditPersistence(ModelBuilder modelBuilder)
+    {
+        var adminAudit = modelBuilder.Entity<AdminAudit>();
+
+        adminAudit.ToTable(
+            "admin_audits",
+            table =>
+            {
+                table.HasCheckConstraint("CK_admin_audits_action", "action = 1");
+                table.HasCheckConstraint("CK_admin_audits_result", "result = 1");
+                table.HasCheckConstraint("CK_admin_audits_gold_nonnegative", "gold_amount >= 0");
+                table.HasCheckConstraint(
+                    "CK_admin_audits_item_reward_shape",
+                    "(item_id IS NULL AND item_quantity IS NULL) OR (item_id IS NOT NULL AND item_quantity IS NOT NULL AND item_id > 0 AND item_quantity > 0)");
+                table.HasCheckConstraint(
+                    "CK_admin_audits_has_reward",
+                    "gold_amount > 0 OR item_id IS NOT NULL");
+            });
+        adminAudit.HasKey(entity => entity.Id);
+        adminAudit.Property(entity => entity.Id)
+            .HasColumnName("admin_audit_id")
+            .ValueGeneratedNever();
+        adminAudit.Property(entity => entity.AdministratorAccountId)
+            .HasColumnName("administrator_account_id")
+            .ValueGeneratedNever();
+        adminAudit.Property(entity => entity.TargetPlayerId)
+            .HasColumnName("target_player_id")
+            .ValueGeneratedNever();
+        adminAudit.Property(entity => entity.RequestId)
+            .HasColumnName("request_id")
+            .ValueGeneratedNever();
+        adminAudit.HasIndex(entity => entity.RequestId)
+            .IsUnique()
+            .HasDatabaseName("IX_admin_audits_request_id");
+        adminAudit.HasIndex(entity => new { entity.TargetPlayerId, entity.CreatedAt })
+            .HasDatabaseName("IX_admin_audits_target_player_id_created_at");
+        adminAudit.Property(entity => entity.Action)
+            .HasColumnName("action")
+            .HasConversion<int>()
+            .IsRequired();
+        adminAudit.Property(entity => entity.GoldAmount)
+            .HasColumnName("gold_amount")
+            .HasColumnType("bigint")
+            .IsRequired();
+        adminAudit.Property(entity => entity.ItemId)
+            .HasColumnName("item_id");
+        adminAudit.Property(entity => entity.ItemQuantity)
+            .HasColumnName("item_quantity");
+        adminAudit.Property(entity => entity.Reason)
+            .HasColumnName("reason")
+            .HasMaxLength(RewardAudit.MaxReasonLength)
+            .IsRequired();
+        adminAudit.Property(entity => entity.Result)
+            .HasColumnName("result")
+            .HasConversion<int>()
+            .IsRequired();
+        adminAudit.Property(entity => entity.CreatedAt)
+            .HasColumnName("created_at")
+            .HasColumnType("timestamp with time zone")
+            .IsRequired();
+        adminAudit.HasOne<Account>()
+            .WithMany()
+            .HasForeignKey(entity => entity.AdministratorAccountId)
+            .OnDelete(DeleteBehavior.Restrict);
+        adminAudit.HasOne<Player>()
+            .WithMany()
+            .HasForeignKey(entity => entity.TargetPlayerId)
+            .OnDelete(DeleteBehavior.Restrict);
+        // 관리자 감사는 반드시 같은 request_id의 실제 보상 감사 한 건을 가리켜야 합니다.
+        adminAudit.HasOne<RewardAudit>()
+            .WithOne()
+            .HasForeignKey<AdminAudit>(entity => entity.RequestId)
+            .HasPrincipalKey<RewardAudit>(entity => entity.RequestId)
+            .OnDelete(DeleteBehavior.Restrict);
     }
 
     /// <summary>

@@ -7,6 +7,9 @@ namespace CoopGameServer.Persistence.Rewards;
 /// <param name="ItemId">추가할 아이템 식별자이며 아이템 보상이 없으면 null입니다.</param>
 /// <param name="ItemQuantity">추가할 아이템 수량이며 아이템 보상이 없으면 null입니다.</param>
 /// <param name="Reason">감사 이력에 남길 서버 측 지급 사유입니다.</param>
+/// <param name="AdministratorAccountId">
+/// 관리자 지급이면 검증된 관리자 Account 식별자이고, 게임 결과 보상이면 null입니다.
+/// </param>
 /// <remarks>
 /// 이 형식은 HTTP DTO(Data Transfer Object, 계층 사이에서 데이터를 운반하는 객체)나
 /// Orleans 계약을 참조하지 않아 API와 Silo 양쪽에서 재사용할 수 있습니다.
@@ -17,4 +20,5 @@ public sealed record RewardWriteCommand(
     long GoldAmount,
     int? ItemId,
     int? ItemQuantity,
-    string Reason);
+    string Reason,
+    Guid? AdministratorAccountId = null);

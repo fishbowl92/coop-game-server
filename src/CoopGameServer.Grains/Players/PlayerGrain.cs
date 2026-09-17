@@ -69,6 +69,7 @@ public sealed class PlayerGrain : Grain, IPlayerGrain
             RewardWriteError.None => Applied(writeCommand, writeResult),
             RewardWriteError.PlayerNotFound => Rejected(PlayerRewardCommandError.PlayerNotFound),
             RewardWriteError.IdempotencyConflict => Rejected(PlayerRewardCommandError.IdempotencyConflict),
+            RewardWriteError.InvalidAdministrator => Rejected(PlayerRewardCommandError.InvalidAdministrator),
             _ => throw new InvalidOperationException(
                 $"지원하지 않는 보상 쓰기 오류입니다: {writeResult.Error}"),
         };
@@ -126,6 +127,7 @@ public sealed class PlayerGrain : Grain, IPlayerGrain
             RewardWriteError.None => Applied(writeCommand, writeResult),
             RewardWriteError.PlayerNotFound => Rejected(PlayerRewardCommandError.PlayerNotFound),
             RewardWriteError.IdempotencyConflict => Rejected(PlayerRewardCommandError.IdempotencyConflict),
+            RewardWriteError.InvalidAdministrator => Rejected(PlayerRewardCommandError.InvalidAdministrator),
             _ => throw new InvalidOperationException(
                 $"지원하지 않는 보상 쓰기 오류입니다: {writeResult.Error}"),
         };
@@ -277,6 +279,7 @@ public sealed class PlayerGrain : Grain, IPlayerGrain
         if (playerId == Guid.Empty ||
             command is null ||
             command.RequestId == Guid.Empty ||
+            command.AdministratorAccountId == Guid.Empty ||
             command.GoldAmount < 0)
         {
             return false;
@@ -306,7 +309,8 @@ public sealed class PlayerGrain : Grain, IPlayerGrain
             command.GoldAmount,
             command.ItemId,
             command.ItemQuantity,
-            normalizedReason);
+            normalizedReason,
+            command.AdministratorAccountId);
         return true;
     }
 

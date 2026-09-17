@@ -6,6 +6,10 @@ namespace CoopGameServer.GrainContracts.Players;
 /// <param name="ItemId">추가할 아이템 식별자이며 아이템 보상이 없으면 null입니다.</param>
 /// <param name="ItemQuantity">추가할 아이템 수량이며 아이템 보상이 없으면 null입니다.</param>
 /// <param name="Reason">보상을 지급한 서버 측 사유입니다.</param>
+/// <param name="AdministratorAccountId">
+/// 검증된 JWT의 account_id Claim에서 읽은 관리자 계정 식별자입니다.
+/// 이전 직렬화 Payload와 게임 내부 호출을 위해 null을 허용하지만 관리자 HTTP API는 반드시 값을 전달합니다.
+/// </param>
 /// <remarks>
 /// Player 식별자는 이 명령에 넣지 않습니다. 호출 대상 PlayerGrain의 Guid 기본 키가
 /// 유일한 playerId 원본이 됩니다.
@@ -16,4 +20,5 @@ public sealed record GrantPlayerRewardCommand(
     [property: Id(1)] long GoldAmount,
     [property: Id(2)] int? ItemId,
     [property: Id(3)] int? ItemQuantity,
-    [property: Id(4)] string Reason);
+    [property: Id(4)] string Reason,
+    [property: Id(5)] Guid? AdministratorAccountId = null);

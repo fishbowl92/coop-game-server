@@ -9,6 +9,9 @@ public enum RewardWriteError
     /// <summary>보상을 받을 Player 행이 존재하지 않습니다.</summary>
     PlayerNotFound = 1,
 
-    /// <summary>같은 멱등성 키가 이전과 다른 보상 내용으로 재사용됐습니다.</summary>
+    /// <summary>같은 멱등성 키가 이전과 다른 보상 내용이나 실행 주체로 재사용됐습니다.</summary>
     IdempotencyConflict = 2,
+
+    /// <summary>지급을 요청한 Account가 현재 Administrator 역할이 아닙니다.</summary>
+    InvalidAdministrator = 3,
 }

@@ -16,6 +16,9 @@ public enum PlayerRewardCommandError
     /// <summary>요청한 보상 정책 버전을 서버가 더 이상 지원하지 않습니다.</summary>
     UnsupportedRewardPolicy = 3,
 
-    /// <summary>같은 멱등성 키가 이전과 다른 내용으로 재사용됐습니다.</summary>
+    /// <summary>같은 멱등성 키가 이전과 다른 내용이나 실행 주체로 재사용됐습니다.</summary>
     IdempotencyConflict = 4,
+
+    /// <summary>지급을 요청한 Account가 현재 Administrator 역할이 아닙니다.</summary>
+    InvalidAdministrator = 5,
 }

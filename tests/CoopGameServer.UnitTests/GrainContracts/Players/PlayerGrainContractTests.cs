@@ -46,7 +46,8 @@ public sealed class PlayerGrainContractTests
             (nameof(GrantPlayerRewardCommand.GoldAmount), 1),
             (nameof(GrantPlayerRewardCommand.ItemId), 2),
             (nameof(GrantPlayerRewardCommand.ItemQuantity), 3),
-            (nameof(GrantPlayerRewardCommand.Reason), 4));
+            (nameof(GrantPlayerRewardCommand.Reason), 4),
+            (nameof(GrantPlayerRewardCommand.AdministratorAccountId), 5));
 
         AssertSerializerIds<CompletePlayerGameCommand>(
             (nameof(CompletePlayerGameCommand.RequestId), 0),

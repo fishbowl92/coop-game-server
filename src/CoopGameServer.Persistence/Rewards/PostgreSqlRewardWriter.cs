@@ -1,3 +1,5 @@
+using CoopGameServer.Domain.Accounts;
+using CoopGameServer.Domain.Administration;
 using CoopGameServer.Domain.Inventories;
 using CoopGameServer.Domain.Rewards;
 using CoopGameServer.Domain.Wallets;
@@ -7,7 +9,7 @@ using Npgsql;
 namespace CoopGameServer.Persistence.Rewards;
 
 /// <summary>
-/// 보상 감사 이력, 지갑, 인벤토리를 하나의 PostgreSQL Transaction으로 변경합니다.
+/// 보상 감사 이력, 선택적 관리자 감사 이력, 지갑, 인벤토리를 하나의 PostgreSQL Transaction으로 변경합니다.
 /// </summary>
 /// <remarks>
 /// 요청마다 <see cref="IDbContextFactory{TContext}"/>에서 새 <see cref="GameDbContext"/>를 만들므로
@@ -17,7 +19,8 @@ namespace CoopGameServer.Persistence.Rewards;
 /// </remarks>
 public sealed class PostgreSqlRewardWriter : IRewardWriter
 {
-    private const string RequestIdUniqueIndexName = "IX_reward_audits_request_id";
+    private const string RewardRequestIdUniqueIndexName = "IX_reward_audits_request_id";
+    private const string AdminRequestIdUniqueIndexName = "IX_admin_audits_request_id";
 
     private readonly IDbContextFactory<GameDbContext> _gameDbContextFactory;
     private readonly TimeProvider _timeProvider;
@@ -41,8 +44,8 @@ public sealed class PostgreSqlRewardWriter : IRewardWriter
     {
         ArgumentNullException.ThrowIfNull(command);
 
-        // 도메인 객체 생성이 입력 형태를 검증하고 지급 사유를 Trim하여 정규화합니다.
-        // 하나의 now 값을 감사 이력, 지갑, 인벤토리 변경에 함께 사용해 시각 기준을 통일합니다.
+        // 하나의 now를 보상·관리자 감사와 상태 변경에 공유해 같은 Transaction의 시각 기준을 통일합니다.
+        var now = _timeProvider.GetUtcNow();
         var requestedRewardAudit = new RewardAudit(
             Guid.NewGuid(),
             command.RequestId,
@@ -51,18 +54,34 @@ public sealed class PostgreSqlRewardWriter : IRewardWriter
             command.ItemId,
             command.ItemQuantity,
             command.Reason,
-            _timeProvider.GetUtcNow());
+            now);
+        var requestedAdminAudit = command.AdministratorAccountId is Guid administratorAccountId
+            ? new AdminAudit(
+                Guid.NewGuid(),
+                administratorAccountId,
+                command.PlayerId,
+                command.RequestId,
+                AdminAuditAction.GrantReward,
+                command.GoldAmount,
+                command.ItemId,
+                command.ItemQuantity,
+                command.Reason,
+                AdminAuditResult.Applied,
+                now)
+            : null;
 
         // 외부 HTTP 취소 토큰을 전달하지 않습니다. 시작된 멱등성 작업은 서버에서 끝까지 확정합니다.
         await using var gameDbContext = await _gameDbContextFactory.CreateDbContextAsync(CancellationToken.None);
 
-        var existingRewardAudit = await FindRewardAuditAsync(
-            gameDbContext,
-            requestedRewardAudit.RequestId);
-
+        var existingRewardAudit = await FindRewardAuditAsync(gameDbContext, requestedRewardAudit.RequestId);
         if (existingRewardAudit is not null)
         {
-            return IsSameRewardRequest(existingRewardAudit, requestedRewardAudit)
+            var existingAdminAudit = await FindAdminAuditAsync(gameDbContext, requestedRewardAudit.RequestId);
+            return IsSameRequest(
+                existingRewardAudit,
+                existingAdminAudit,
+                requestedRewardAudit,
+                requestedAdminAudit)
                 ? ToSuccessResult(existingRewardAudit, isReplay: true)
                 : ToErrorResult(RewardWriteError.IdempotencyConflict);
         }
@@ -71,17 +90,31 @@ public sealed class PostgreSqlRewardWriter : IRewardWriter
 
         try
         {
-            // 지갑·인벤토리 행이 아직 없어도 반드시 존재하는 Player 행을 잠금 기준으로 사용합니다.
+            // 지갑·인벤토리 행이 없어도 항상 존재하는 Player 행을 잠금 기준으로 사용합니다.
             var playerExists = await TryLockPlayerAsync(gameDbContext, command.PlayerId);
-
             if (!playerExists)
             {
                 await transaction.RollbackAsync(CancellationToken.None);
                 return ToErrorResult(RewardWriteError.PlayerNotFound);
             }
 
+            // JWT의 역할 Claim은 발급 뒤 바뀔 수 있으므로 관리자 Account가 현재도 존재하고
+            // Administrator 역할인지 같은 DB 원본에서 다시 확인합니다.
+            if (requestedAdminAudit is not null &&
+                !await IsCurrentAdministratorAsync(gameDbContext, requestedAdminAudit.AdministratorAccountId))
+            {
+                await transaction.RollbackAsync(CancellationToken.None);
+                return ToErrorResult(RewardWriteError.InvalidAdministrator);
+            }
+
             // request_id UNIQUE 인덱스가 같은 요청의 동시 처리 중 한 작업만 통과시킵니다.
             gameDbContext.RewardAudits.Add(requestedRewardAudit);
+            if (requestedAdminAudit is not null)
+            {
+                // 보상과 관리자 감사는 같은 Transaction에서 함께 Commit되거나 함께 Rollback됩니다.
+                gameDbContext.AdminAudits.Add(requestedAdminAudit);
+            }
+
             await gameDbContext.SaveChangesAsync(CancellationToken.None);
 
             // 아이템 전용 보상도 지갑 행을 생성해 이후 진행도 조회 구조를 일정하게 유지합니다.
@@ -122,7 +155,6 @@ public sealed class PostgreSqlRewardWriter : IRewardWriter
                 }
             }
 
-            // 세 테이블 변경이 모두 성공한 경우에만 보상 작업 전체를 Commit합니다.
             await gameDbContext.SaveChangesAsync(CancellationToken.None);
             await transaction.CommitAsync(CancellationToken.None);
 
@@ -137,29 +169,42 @@ public sealed class PostgreSqlRewardWriter : IRewardWriter
             var competingRewardAudit = await FindRewardAuditAsync(
                 gameDbContext,
                 requestedRewardAudit.RequestId);
-
-            // UNIQUE 위반 뒤 승자 행이 없으면 예상하지 못한 DB 상태이므로 원래 예외를 보존합니다.
             if (competingRewardAudit is null)
             {
                 throw;
             }
 
-            return IsSameRewardRequest(competingRewardAudit, requestedRewardAudit)
+            var competingAdminAudit = await FindAdminAuditAsync(
+                gameDbContext,
+                requestedRewardAudit.RequestId);
+            return IsSameRequest(
+                competingRewardAudit,
+                competingAdminAudit,
+                requestedRewardAudit,
+                requestedAdminAudit)
                 ? ToSuccessResult(competingRewardAudit, isReplay: true)
                 : ToErrorResult(RewardWriteError.IdempotencyConflict);
         }
     }
 
     /// <summary>멱등성 키로 기존 보상 감사 이력을 추적 없이 조회합니다.</summary>
-    private static async Task<RewardAudit?> FindRewardAuditAsync(
+    private static Task<RewardAudit?> FindRewardAuditAsync(
         GameDbContext gameDbContext,
         Guid requestId)
     {
-        return await gameDbContext.RewardAudits
+        return gameDbContext.RewardAudits
             .AsNoTracking()
-            .SingleOrDefaultAsync(
-                entity => entity.RequestId == requestId,
-                CancellationToken.None);
+            .SingleOrDefaultAsync(entity => entity.RequestId == requestId, CancellationToken.None);
+    }
+
+    /// <summary>멱등성 키로 기존 관리자 감사 이력을 추적 없이 조회합니다.</summary>
+    private static Task<AdminAudit?> FindAdminAuditAsync(
+        GameDbContext gameDbContext,
+        Guid requestId)
+    {
+        return gameDbContext.AdminAudits
+            .AsNoTracking()
+            .SingleOrDefaultAsync(entity => entity.RequestId == requestId, CancellationToken.None);
     }
 
     /// <summary>해당 Player 행을 트랜잭션 종료 시점까지 배타적으로 잠급니다.</summary>
@@ -182,25 +227,58 @@ public sealed class PostgreSqlRewardWriter : IRewardWriter
         return lockedPlayers.Count == 1;
     }
 
-    /// <summary>기존 요청과 새 요청의 지급 대상·수량·사유가 완전히 같은지 확인합니다.</summary>
-    private static bool IsSameRewardRequest(
-        RewardAudit existingRewardAudit,
-        RewardAudit requestedRewardAudit)
+    /// <summary>관리자 Account가 현재 DB에서도 Administrator 역할인지 확인합니다.</summary>
+    private static Task<bool> IsCurrentAdministratorAsync(
+        GameDbContext gameDbContext,
+        Guid administratorAccountId)
     {
-        return existingRewardAudit.PlayerId == requestedRewardAudit.PlayerId &&
-               existingRewardAudit.GoldAmount == requestedRewardAudit.GoldAmount &&
-               existingRewardAudit.ItemId == requestedRewardAudit.ItemId &&
-               existingRewardAudit.ItemQuantity == requestedRewardAudit.ItemQuantity &&
-               existingRewardAudit.Reason == requestedRewardAudit.Reason;
+        return gameDbContext.Accounts
+            .AsNoTracking()
+            .AnyAsync(
+                account => account.Id == administratorAccountId &&
+                           account.Role == AccountRole.Administrator,
+                CancellationToken.None);
     }
 
-    /// <summary>PostgreSQL request_id 고유 인덱스의 중복 오류인지 확인합니다.</summary>
+    /// <summary>기존 요청과 새 요청의 보상 내용과 관리자 실행 문맥이 모두 같은지 확인합니다.</summary>
+    private static bool IsSameRequest(
+        RewardAudit existingRewardAudit,
+        AdminAudit? existingAdminAudit,
+        RewardAudit requestedRewardAudit,
+        AdminAudit? requestedAdminAudit)
+    {
+        if (existingRewardAudit.PlayerId != requestedRewardAudit.PlayerId ||
+            existingRewardAudit.GoldAmount != requestedRewardAudit.GoldAmount ||
+            existingRewardAudit.ItemId != requestedRewardAudit.ItemId ||
+            existingRewardAudit.ItemQuantity != requestedRewardAudit.ItemQuantity ||
+            !string.Equals(existingRewardAudit.Reason, requestedRewardAudit.Reason, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        if (requestedAdminAudit is null)
+        {
+            return existingAdminAudit is null;
+        }
+
+        return existingAdminAudit is not null &&
+               existingAdminAudit.AdministratorAccountId == requestedAdminAudit.AdministratorAccountId &&
+               existingAdminAudit.TargetPlayerId == requestedAdminAudit.TargetPlayerId &&
+               existingAdminAudit.Action == requestedAdminAudit.Action &&
+               existingAdminAudit.GoldAmount == requestedAdminAudit.GoldAmount &&
+               existingAdminAudit.ItemId == requestedAdminAudit.ItemId &&
+               existingAdminAudit.ItemQuantity == requestedAdminAudit.ItemQuantity &&
+               string.Equals(existingAdminAudit.Reason, requestedAdminAudit.Reason, StringComparison.Ordinal) &&
+               existingAdminAudit.Result == requestedAdminAudit.Result;
+    }
+
+    /// <summary>보상 또는 관리자 감사의 request_id 고유 인덱스 위반인지 확인합니다.</summary>
     private static bool IsDuplicateRequestId(DbUpdateException exception)
     {
         return exception.InnerException is PostgresException
         {
             SqlState: PostgresErrorCodes.UniqueViolation,
-            ConstraintName: RequestIdUniqueIndexName,
+            ConstraintName: RewardRequestIdUniqueIndexName or AdminRequestIdUniqueIndexName,
         };
     }
 
