@@ -29,6 +29,7 @@ public sealed class RewardService
     /// </summary>
     /// <param name="playerId">보상을 받는 플레이어 식별자입니다.</param>
     /// <param name="request">골드·아이템·멱등성 키·사유를 담은 요청입니다.</param>
+    /// <param name="administratorAccountId">검증된 JWT에서 읽은 관리자 Account 식별자입니다.</param>
     /// <param name="cancellationToken">
     /// 작업을 시작하기 전에 요청이 이미 취소됐는지 확인하는 토큰입니다.
     /// 보상 쓰기가 시작된 뒤에는 멱등성 결과를 확정하기 위해 중간 취소하지 않습니다.
@@ -37,9 +38,15 @@ public sealed class RewardService
     public async Task<PlayerRewardCommandResult> GrantAsync(
         Guid playerId,
         GrantRewardRequest request,
+        Guid administratorAccountId,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
+        if (administratorAccountId == Guid.Empty)
+        {
+            throw new ArgumentException("관리자 Account 식별자는 비어 있을 수 없습니다.", nameof(administratorAccountId));
+        }
+
         cancellationToken.ThrowIfCancellationRequested();
 
         var command = new GrantPlayerRewardCommand(
@@ -47,7 +54,8 @@ public sealed class RewardService
             request.GoldAmount,
             request.ItemId,
             request.ItemQuantity,
-            request.Reason ?? string.Empty);
+            request.Reason ?? string.Empty,
+            administratorAccountId);
 
         // 이미 취소된 요청은 Grain 명령을 시작하지 않습니다. 호출이 시작된 뒤에는 WaitAsync만 취소되며,
         // 기반 Grain Task(실제 Grain 작업)는 HTTP 연결과 무관하게 Silo에서 끝까지 실행됩니다.

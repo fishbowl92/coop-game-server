@@ -1,4 +1,6 @@
+using System.Security.Claims;
 using CoopGameServer.Api.Application.Rewards;
+using CoopGameServer.Api.Authentication;
 using CoopGameServer.Api.Controllers;
 using CoopGameServer.Contracts.Rewards;
 using CoopGameServer.GrainContracts.Players;
@@ -131,7 +133,17 @@ public sealed class RewardsControllerTests
     {
         var grainClient = new StubPlayerGrainClient(
             (_, _) => Task.FromResult(grainResult));
-        return new RewardsController(new RewardService(grainClient));
+        var controller = new RewardsController(new RewardService(grainClient));
+        controller.ControllerContext = new ControllerContext
+        {
+            HttpContext = new DefaultHttpContext
+            {
+                User = new ClaimsPrincipal(new ClaimsIdentity(
+                    [new Claim(CurrentPlayerClaims.AccountIdClaimType, Guid.NewGuid().ToString())],
+                    "UnitTest")),
+            },
+        };
+        return controller;
     }
 
     private static PlayerRewardCommandResult Applied(

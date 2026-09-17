@@ -1,4 +1,5 @@
 using System.Text;
+using CoopGameServer.Api.Application.Administration;
 using CoopGameServer.Api.Application.Authentication;
 using CoopGameServer.Api.Application.GameRooms;
 using CoopGameServer.Api.Application.Matchmaking;
@@ -54,11 +55,19 @@ builder.Services.AddAuthorization(options =>
 {
     options.AddPolicy(
         AuthorizationPolicies.AdministratorOnly,
-        policy => policy.RequireRole(AccountRole.Administrator.ToString()));
+        policy => policy
+            .RequireRole(AccountRole.Administrator.ToString())
+            .RequireAssertion(context => context.User.TryGetAccountId(out _)));
 });
 
 // PasswordHasher는 비밀번호 원문을 저장하지 않고 salt를 포함한 검증용 해시만 만들고 비교합니다.
 builder.Services.AddScoped<IPasswordHasher<Account>, PasswordHasher<Account>>();
+if (builder.Environment.IsDevelopment())
+{
+    // User Secrets가 세 값을 모두 제공할 때만 로컬 관리자 계정을 생성합니다.
+    builder.Services.AddHostedService<DevelopmentAdministratorBootstrap>();
+}
+
 builder.Services.AddSingleton<JwtTokenService>();
 builder.Services.AddScoped<AuthenticationService>();
 

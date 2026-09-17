@@ -1,5 +1,5 @@
-using System.Security.Claims;
 using System.IdentityModel.Tokens.Jwt;
+using System.Security.Claims;
 using CoopGameServer.Domain.Accounts;
 
 namespace CoopGameServer.Api.Authentication;
@@ -9,6 +9,9 @@ namespace CoopGameServer.Api.Authentication;
 /// </summary>
 public static class CurrentPlayerClaims
 {
+    /// <summary>JWT에서 로그인 Account 식별자를 보관하는 Claim 이름입니다.</summary>
+    public const string AccountIdClaimType = "account_id";
+
     /// <summary>
     /// 현재 요청의 토큰이 지정한 Player를 조작할 권한이 있는지 확인합니다.
     /// </summary>
@@ -29,6 +32,19 @@ public static class CurrentPlayerClaims
 
         return user.TryGetPlayerId(out var authenticatedPlayerId)
             && authenticatedPlayerId == targetPlayerId;
+    }
+
+    /// <summary>검증된 JWT에서 로그인 Account 식별자를 읽습니다.</summary>
+    public static bool TryGetAccountId(this ClaimsPrincipal user, out Guid accountId)
+    {
+        if (user is null)
+        {
+            accountId = Guid.Empty;
+            return false;
+        }
+
+        var rawAccountId = user.FindFirst(AccountIdClaimType)?.Value;
+        return Guid.TryParse(rawAccountId, out accountId) && accountId != Guid.Empty;
     }
 
     /// <summary>검증된 JWT에서 현재 Player 식별자를 읽습니다.</summary>

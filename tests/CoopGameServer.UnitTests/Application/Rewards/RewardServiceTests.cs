@@ -18,6 +18,7 @@ public sealed class RewardServiceTests
     {
         var playerId = Guid.NewGuid();
         var requestId = Guid.NewGuid();
+        var administratorAccountId = Guid.NewGuid();
         var receipt = new PlayerRewardReceipt(
             Guid.NewGuid(),
             requestId,
@@ -33,11 +34,12 @@ public sealed class RewardServiceTests
         var service = new RewardService(grainClient);
         var request = new GrantRewardRequest(requestId, 500, 1001, 2, "administrator-reward");
 
-        var result = await service.GrantAsync(playerId, request, CancellationToken.None);
+        var result = await service.GrantAsync(playerId, request, administratorAccountId, CancellationToken.None);
 
         Assert.Same(expectedResult, result);
         Assert.Equal(playerId, grainClient.LastPlayerId);
         Assert.Equal(requestId, grainClient.LastCommand?.RequestId);
+        Assert.Equal(administratorAccountId, grainClient.LastCommand?.AdministratorAccountId);
         Assert.Equal(500, grainClient.LastCommand?.GoldAmount);
         Assert.Equal(1001, grainClient.LastCommand?.ItemId);
         Assert.Equal(2, grainClient.LastCommand?.ItemQuantity);
@@ -53,7 +55,7 @@ public sealed class RewardServiceTests
         var service = new RewardService(grainClient);
         var request = new GrantRewardRequest(null, 0, null, null, null);
 
-        var result = await service.GrantAsync(Guid.NewGuid(), request, CancellationToken.None);
+        var result = await service.GrantAsync(Guid.NewGuid(), request, Guid.NewGuid(), CancellationToken.None);
 
         Assert.Same(rejectedResult, result);
         Assert.Equal(Guid.Empty, grainClient.LastCommand?.RequestId);
@@ -69,7 +71,7 @@ public sealed class RewardServiceTests
         var service = new RewardService(grainClient);
         var request = new GrantRewardRequest(Guid.NewGuid(), 100, null, null, "conflicting-request");
 
-        var result = await service.GrantAsync(Guid.NewGuid(), request, CancellationToken.None);
+        var result = await service.GrantAsync(Guid.NewGuid(), request, Guid.NewGuid(), CancellationToken.None);
 
         Assert.Same(expectedResult, result);
     }
@@ -95,7 +97,7 @@ public sealed class RewardServiceTests
         var request = new GrantRewardRequest(requestId, 100, null, null, "complete-after-start");
         using var cancellationSource = new CancellationTokenSource();
 
-        var operation = service.GrantAsync(playerId, request, cancellationSource.Token);
+        var operation = service.GrantAsync(playerId, request, Guid.NewGuid(), cancellationSource.Token);
 
         Assert.NotNull(grainClient.LastCommand);
         cancellationSource.Cancel();
@@ -119,7 +121,7 @@ public sealed class RewardServiceTests
         cancellationSource.Cancel();
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(
-            () => service.GrantAsync(Guid.NewGuid(), request, cancellationSource.Token));
+            () => service.GrantAsync(Guid.NewGuid(), request, Guid.NewGuid(), cancellationSource.Token));
 
         Assert.Equal(0, grainClient.CallCount);
     }

@@ -53,7 +53,18 @@ public sealed class RewardsController : ControllerBase
         [FromBody] GrantRewardRequest request,
         CancellationToken cancellationToken)
     {
-        var result = await _rewardService.GrantAsync(playerId, request, cancellationToken);
+        // 역할 Claim만으로는 감사 주체를 저장할 수 없습니다. 서명 검증된 account_id가 없거나
+        // Guid 형식이 아니면 Grain을 호출하기 전에 관리자 작업을 거부합니다.
+        if (!User.TryGetAccountId(out var administratorAccountId))
+        {
+            return Forbid();
+        }
+
+        var result = await _rewardService.GrantAsync(
+            playerId,
+            request,
+            administratorAccountId,
+            cancellationToken);
         return ToActionResult(result);
     }
 
@@ -90,6 +101,7 @@ public sealed class RewardsController : ControllerBase
                 detail: "Reward request values are invalid.",
                 statusCode: StatusCodes.Status400BadRequest),
             PlayerRewardCommandError.PlayerNotFound => NotFound(),
+            PlayerRewardCommandError.InvalidAdministrator => Forbid(),
             PlayerRewardCommandError.IdempotencyConflict => Conflict(new ProblemDetails
             {
                 Title = "Idempotency key was reused with different reward data.",

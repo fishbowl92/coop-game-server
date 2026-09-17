@@ -1,5 +1,6 @@
 using CoopGameServer.Api.Application.Rewards;
 using CoopGameServer.Contracts.Rewards;
+using CoopGameServer.Domain.Accounts;
 using CoopGameServer.GrainContracts.Players;
 using CoopGameServer.IntegrationTests.Infrastructure;
 using Microsoft.EntityFrameworkCore;
@@ -19,7 +20,21 @@ public sealed class RewardServiceGrainIntegrationTests(OrleansTestClusterFixture
     {
         var playerId = Guid.NewGuid();
         var requestId = Guid.NewGuid();
-        await _fixture.RegisterPlayersAsync(playerId);
+        var administratorPlayerId = Guid.NewGuid();
+        var administratorAccountId = Guid.NewGuid();
+        await _fixture.RegisterPlayersAsync(playerId, administratorPlayerId);
+        await using (var setupDbContext = _fixture.CreateDbContext())
+        {
+            var administrator = new Account(
+                administratorAccountId,
+                administratorPlayerId,
+                "admin_" + administratorAccountId.ToString("N")[..24],
+                AccountRole.Administrator,
+                DateTimeOffset.UtcNow);
+            administrator.SetPasswordHash("integration-test-password-hash");
+            setupDbContext.Accounts.Add(administrator);
+            await setupDbContext.SaveChangesAsync();
+        }
 
         // TestCluster Client도 IGrainFactory이므로 실제 API와 같은 Proxy 생성 경로를 사용합니다.
         var grainClient = new OrleansPlayerGrainClient(_fixture.Cluster.Client);
@@ -31,7 +46,7 @@ public sealed class RewardServiceGrainIntegrationTests(OrleansTestClusterFixture
             ItemQuantity: 4,
             Reason: "  api-to-player-grain  ");
 
-        var result = await service.GrantAsync(playerId, request, CancellationToken.None);
+        var result = await service.GrantAsync(playerId, request, administratorAccountId, CancellationToken.None);
 
         Assert.Equal(PlayerRewardCommandStatus.Applied, result.Status);
         Assert.Equal(PlayerRewardCommandError.None, result.Error);
@@ -53,5 +68,10 @@ public sealed class RewardServiceGrainIntegrationTests(OrleansTestClusterFixture
         Assert.Equal(
             1,
             await gameDbContext.RewardAudits.CountAsync(entity => entity.RequestId == requestId));
+        Assert.Equal(
+            1,
+            await gameDbContext.AdminAudits.CountAsync(entity =>
+                entity.RequestId == requestId &&
+                entity.AdministratorAccountId == administratorAccountId));
     }
 }

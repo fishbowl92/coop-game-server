@@ -31,7 +31,7 @@ public sealed class JwtTokenService(JwtOptions options)
         var claims = new[]
         {
             new Claim(JwtRegisteredClaimNames.Sub, account.PlayerId.ToString()),
-            new Claim("account_id", account.Id.ToString()),
+            new Claim(CurrentPlayerClaims.AccountIdClaimType, account.Id.ToString()),
             new Claim(ClaimTypes.Name, account.LoginId),
             new Claim(ClaimTypes.Role, account.Role.ToString()),
         };
