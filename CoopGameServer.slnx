@@ -1,5 +1,6 @@
 <Solution>
   <Folder Name="/src/">
+    <Project Path="src/CoopGameServer.Admin/CoopGameServer.Admin.csproj" />
     <Project Path="src/CoopGameServer.Api/CoopGameServer.Api.csproj" />
     <Project Path="src/CoopGameServer.Contracts/CoopGameServer.Contracts.csproj" />
     <Project Path="src/CoopGameServer.Domain/CoopGameServer.Domain.csproj" />

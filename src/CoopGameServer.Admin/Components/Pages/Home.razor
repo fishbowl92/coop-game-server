@@ -1,0 +1,180 @@
+@page "/"
+@rendermode InteractiveServer
+@inject AdminApiClient Api
+@inject AdminSession Session
+@inject AdminRewardSubmissionState RewardState
+
+<PageTitle>CoopGameServer 운영 도구</PageTitle>
+
+<h1>플레이어 보상 운영</h1>
+<p class="lead">관리자 로그인, 플레이어 조회, 현재 진행도 확인, 감사 가능한 수동 보상 지급을 한 화면에서 처리합니다.</p>
+
+@if (!Session.IsAuthenticated)
+{
+    <section class="panel compact">
+        <h2>관리자 로그인</h2>
+        <label>로그인 ID<input @bind="loginId" autocomplete="username" /></label>
+        <label>비밀번호<input type="password" @bind="password" autocomplete="current-password" /></label>
+        <button @onclick="SignInAsync" disabled="@busy">로그인</button>
+    </section>
+}
+else
+{
+    <section class="session">
+        <span><strong>@Session.LoginId</strong> 로그인됨</span>
+        <button class="secondary" @onclick="SignOut">로그아웃</button>
+    </section>
+
+    <section class="panel">
+        <h2>1. 플레이어 찾기</h2>
+        <div class="row">
+            <input class="grow" @bind="searchQuery" placeholder="Player Guid 또는 정확한 닉네임" />
+            <button @onclick="LookupAsync" disabled="@busy">조회</button>
+        </div>
+    </section>
+
+    @if (player is not null && progression is not null)
+    {
+        <section class="grid">
+            <article class="panel">
+                <h2>2. 현재 진행도</h2>
+                <dl>
+                    <dt>Player ID</dt><dd><code>@player.PlayerId</code></dd>
+                    <dt>닉네임</dt><dd>@player.Nickname</dd>
+                    <dt>골드</dt><dd>@progression.Gold</dd>
+                    <dt>아이템</dt><dd>@(progression.Items.Length == 0 ? "없음" : string.Join(", ", progression.Items.Select(x => $"{x.ItemId} × {x.Quantity}")))</dd>
+                </dl>
+            </article>
+
+            <article class="panel">
+                <h2>3. 보상 지급</h2>
+                <p class="muted">요청 ID: <code>@RewardState.RequestId</code></p>
+                <label>골드<input type="number" @bind="RewardState.GoldAmount" min="0" /></label>
+                <label>아이템 ID<input type="number" @bind="RewardState.ItemId" min="1" /></label>
+                <label>아이템 수량<input type="number" @bind="RewardState.ItemQuantity" min="1" /></label>
+                <label>지급 사유<textarea @bind="RewardState.Reason" maxlength="100"></textarea></label>
+                <button class="danger" @onclick="GrantAsync" disabled="@busy">보상 지급</button>
+                <p class="muted">전송 실패 시 같은 요청 ID로 다시 시도합니다. 성공을 확인한 뒤에만 새 ID가 생성됩니다.</p>
+            </article>
+        </section>
+
+        <section class="panel">
+            <h2>최근 보상 이력</h2>
+            @if (history.Length == 0)
+            {
+                <p>보상 이력이 없습니다.</p>
+            }
+            else
+            {
+                <div class="table-wrap">
+                    <table>
+                        <thead><tr><th>시각(UTC)</th><th>골드</th><th>아이템</th><th>사유</th><th>실행 관리자</th><th>요청 ID</th></tr></thead>
+                        <tbody>
+                        @foreach (var entry in history)
+                        {
+                            <tr>
+                                <td>@entry.CreatedAt.ToString("u")</td>
+                                <td>@entry.GoldAmount</td>
+                                <td>@(entry.ItemId is null ? "-" : $"{entry.ItemId} × {entry.ItemQuantity}")</td>
+                                <td>@entry.Reason</td>
+                                <td>@(entry.AdministratorLoginId ?? "게임 시스템")</td>
+                                <td><code>@entry.RequestId</code></td>
+                            </tr>
+                        }
+                        </tbody>
+                    </table>
+                </div>
+            }
+        </section>
+    }
+}
+
+@if (!string.IsNullOrWhiteSpace(message))
+{
+    <p class="message @messageClass" role="status">@message</p>
+}
+
+@code {
+    private string loginId = string.Empty;
+    private string password = string.Empty;
+    private string searchQuery = string.Empty;
+    private string? message;
+    private string messageClass = "info";
+    private bool busy;
+    private AdminPlayerLookupResponse? player;
+    private PlayerProgressionResponse? progression;
+    private AdminRewardHistoryResponse[] history = [];
+
+    private async Task SignInAsync() => await RunAsync(async () =>
+    {
+        await Api.SignInAsync(loginId, password);
+        password = string.Empty;
+        SetMessage("관리자 로그인이 완료되었습니다.", "success");
+    });
+
+    private void SignOut()
+    {
+        Session.SignOut();
+        player = null;
+        progression = null;
+        history = [];
+        SetMessage("로그아웃했습니다.", "info");
+    }
+
+    private async Task LookupAsync() => await RunAsync(async () =>
+    {
+        player = await Api.LookupPlayerAsync(searchQuery);
+        await RefreshSelectedPlayerAsync();
+        SetMessage($"{player.Nickname} 플레이어를 조회했습니다.", "success");
+    });
+
+    private async Task GrantAsync() => await RunAsync(async () =>
+    {
+        if (player is null) return;
+        var requestId = RewardState.RequestId;
+        var result = await Api.GrantRewardAsync(player.PlayerId, RewardState.CreateRequest());
+        RewardState.ConfirmSuccess();
+        await RefreshSelectedPlayerAsync();
+        SetMessage(
+            result.IsReplay
+                ? $"기존 요청 {requestId}의 적용 결과를 확인했습니다."
+                : $"보상 요청 {requestId}이 적용되었습니다.",
+            "success");
+    });
+
+    private async Task RefreshSelectedPlayerAsync()
+    {
+        if (player is null) return;
+        progression = await Api.GetProgressionAsync(player.PlayerId);
+        history = await Api.GetRewardHistoryAsync(player.PlayerId);
+    }
+
+    private async Task RunAsync(Func<Task> action)
+    {
+        if (busy) return;
+        busy = true;
+        message = null;
+        try
+        {
+            await action();
+        }
+        catch (AdminApiException exception)
+        {
+            SetMessage($"API 오류 ({(int)exception.StatusCode}): {exception.Message}", "error");
+        }
+        catch (Exception exception)
+        {
+            SetMessage($"요청을 완료하지 못했습니다: {exception.Message}", "error");
+        }
+        finally
+        {
+            busy = false;
+        }
+    }
+
+    private void SetMessage(string value, string style)
+    {
+        message = value;
+        messageClass = style;
+    }
+}
