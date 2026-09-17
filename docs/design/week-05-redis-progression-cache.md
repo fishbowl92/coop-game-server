@@ -199,7 +199,203 @@ Player ID를 태그로 넣지 않았습니다. Player마다 새 시계열이 생
 
 커밋 `7cd4a84`를 GitHub `main`에 Push했고 [GitHub Actions CI #35196252235](https://github.com/fishbowl92/coop-game-server/actions/runs/35196252235)가 성공했습니다. 로컬 검증과 원격 CI는 같은 코드·테스트 커밋을 대상으로 합니다.
 
-## 13. 남은 범위
+## 13. 실제 코드로 따라가는 조회와 장애 처리
+
+이 절의 코드는 설명용 의사 코드가 아니라 공개 소스·테스트 커밋 `7cd4a84`에 들어간 실제 구현에서 가져왔습니다. 긴 함수 전체를 복사하기보다 책임 경계가 바뀌는 부분을 읽고, 링크한 원본에서 앞뒤 흐름을 이어서 확인하는 방식으로 학습합니다.
+
+### 13.1 API가 인증된 사용자의 접근 범위를 확인한다
+
+원본: [`PlayersController.GetPlayerProgression`](../../src/CoopGameServer.Api/Controllers/PlayersController.cs)
+
+```csharp
+if (!User.CanAccessPlayer(playerId))
+{
+    return Forbid();
+}
+
+var query = new GetPlayerProgressionPageQuery(pageSize, continuationToken);
+var result = await _playerGrainClient
+    .GetProgressionPageAsync(playerId, query)
+    .WaitAsync(cancellationToken);
+```
+
+- 메서드의 `[Authorize]`가 JWT(JSON Web Token, 서명된 로그인 토큰) 인증 여부를 확인하고, `CanAccessPlayer`가 토큰의 Player ID와 URL의 `playerId`가 같은지 확인합니다.
+- API는 Redis를 직접 읽지 않습니다. 인증·인가와 HTTP 입력 변환은 Controller가 맡고, Player 단위 조회 순서는 Grain에 위임합니다.
+- `pageSize`와 `continuationToken`은 Grain 계약 객체로 전달됩니다. Grain이 반환한 `InvalidPageSize`, `InvalidContinuationToken`, `PlayerNotFound`는 각각 HTTP 400 또는 404로 변환됩니다.
+
+### 13.2 PlayerGrain이 첫 페이지만 Cache-Aside로 처리한다
+
+원본: [`PlayerGrain.GetProgressionPageAsync`](../../src/CoopGameServer.Grains/Players/PlayerGrain.cs)
+
+```csharp
+var isFirstPage = query.ContinuationToken is null;
+if (isFirstPage)
+{
+    var cacheRead = await _progressionCache.ReadFirstPageAsync(playerId, query.PageSize);
+    if (cacheRead is
+        {
+            Status: PlayerProgressionCacheReadStatus.Hit,
+            Value: not null,
+        })
+    {
+        return cacheRead.Value;
+    }
+
+    var fallbackReason = cacheRead.Status switch
+    {
+        PlayerProgressionCacheReadStatus.Miss => "miss",
+        PlayerProgressionCacheReadStatus.Error => "error",
+        PlayerProgressionCacheReadStatus.Corrupt => "corrupt",
+        _ => "unknown",
+    };
+    PlayerProgressionCacheMetrics.RecordFallback(fallbackReason);
+}
+```
+
+- `ContinuationToken`이 없는 첫 페이지에서만 Redis를 확인합니다. 다음 페이지는 이 블록을 건너뛰고 PostgreSQL을 읽습니다.
+- 캐시 값의 부재뿐 아니라 Redis 오류와 손상된 JSON도 정상적인 대체 조회 원인으로 표현합니다. `null` 하나만 반환했다면 Miss와 장애를 지표에서 구분할 수 없습니다.
+- 같은 Player의 호출을 한 PlayerGrain이 순서대로 처리하므로, 현재 단일 Orleans Cluster 안에서는 첫 요청이 캐시를 채운 뒤 대기하던 요청이 Hit를 볼 수 있습니다.
+
+Cache Miss 뒤에는 서로 다른 시점의 프로필·골드·인벤토리가 섞이지 않도록 PostgreSQL Snapshot(스냅샷, 한 시점 기준 읽기)을 사용합니다.
+
+```csharp
+await using var readTransaction = await gameDbContext.Database.BeginTransactionAsync(
+    IsolationLevel.RepeatableRead);
+
+var player = await gameDbContext.Players
+    .AsNoTracking()
+    .Where(entity => entity.Id == playerId)
+    .Select(entity => new
+    {
+        entity.Id,
+        entity.Nickname,
+        entity.CreatedAt,
+        entity.UpdatedAt,
+    })
+    .SingleOrDefaultAsync();
+```
+
+`RepeatableRead`는 Transaction(트랜잭션, 여러 DB 작업의 일관된 처리 단위) 안의 반복 읽기가 같은 Snapshot을 보게 합니다. 이어지는 지갑과 인벤토리 SELECT도 같은 Transaction 안에서 실행되고, 첫 페이지 결과만 다음 코드로 Redis에 씁니다.
+
+```csharp
+if (isFirstPage)
+{
+    PlayerProgressionCacheMetrics.RecordDatabaseFillDuration(
+        Stopwatch.GetElapsedTime(databaseStartedAt).TotalMilliseconds);
+    await _progressionCache.WriteFirstPageAsync(playerId, query.PageSize, result);
+}
+```
+
+### 13.3 Redis 구현이 짧게 기다리고 실패를 값으로 바꾼다
+
+원본: [`RedisPlayerProgressionCache.ReadFirstPageAsync`](../../src/CoopGameServer.Grains/Players/Caching/RedisPlayerProgressionCache.cs)
+
+```csharp
+var value = await _database.HashGetAsync(BuildKey(playerId), BuildField(pageSize))
+    .WaitAsync(_options.OperationTimeout);
+
+if (value.IsNullOrEmpty)
+{
+    PlayerProgressionCacheMetrics.RecordRequest("miss");
+    return new(PlayerProgressionCacheReadStatus.Miss, null);
+}
+```
+
+Redis 명령 자체가 끝날 때까지 무한정 기다리지 않고 `OperationTimeout`만큼만 기다립니다. 현재 기본값은 100ms입니다. Redis 예외와 이 시간 제한은 다음 `catch`에서 외부 예외 대신 `Error` 상태로 바뀝니다.
+
+```csharp
+catch (Exception exception) when (IsRedisFailure(exception))
+{
+    ReadFailureLog(_logger, playerId, exception);
+    PlayerProgressionCacheMetrics.RecordRequest("error");
+    PlayerProgressionCacheMetrics.RecordRedisError("read");
+    return new(PlayerProgressionCacheReadStatus.Error, null);
+}
+```
+
+이 반환값을 받은 PlayerGrain은 앞 절의 코드대로 PostgreSQL을 읽습니다. 즉, Fail-Open Cache(캐시 장애 때 원본 기능을 계속 사용하는 정책)는 Redis 클래스 하나가 아니라 **Redis 오류를 상태로 변환하는 코드와 Grain의 DB 대체 조회가 연결되어** 완성됩니다.
+
+캐시 저장은 Hash 값과 Key 만료 시간을 같은 Redis Transaction에 넣습니다.
+
+```csharp
+var transaction = _database.CreateTransaction();
+var setTask = transaction.HashSetAsync(key, BuildField(pageSize), serialized);
+var expireTask = transaction.KeyExpireAsync(key, CreateEntryTtl());
+var committed = await transaction.ExecuteAsync().WaitAsync(_options.OperationTimeout);
+```
+
+Hash만 저장되고 TTL(Time To Live, 자동 만료 시간)이 빠진 영구 키가 생기지 않도록 두 명령을 함께 실행합니다. 쓰기 실패는 로그와 지표에 남기지만, PostgreSQL에서 이미 읽은 결과는 그대로 호출자에게 반환됩니다.
+
+### 13.4 DB 변경을 먼저 확정하고 캐시를 삭제한다
+
+원본: [`PlayersController.UpdatePlayerNickname`](../../src/CoopGameServer.Api/Controllers/PlayersController.cs)
+
+```csharp
+await _gameDbContext.SaveChangesAsync(cancellationToken);
+
+try
+{
+    // DB Commit 뒤 삭제합니다. Redis 실패로 이미 성공한 PostgreSQL 변경을 되돌리지 않습니다.
+    await _playerGrainClient.InvalidateProgressionCacheAsync(playerId);
+}
+catch (Exception exception)
+{
+    CacheInvalidationFailureLog(_logger, playerId, exception);
+}
+```
+
+- `SaveChangesAsync`가 먼저 성공해야 닉네임이 공식 원본에 반영됩니다.
+- 그다음 같은 PlayerGrain을 통해 캐시 Key 전체를 삭제해 여러 PageSize의 첫 페이지를 한 번에 무효화합니다.
+- Redis 삭제 실패를 로그로 남기되 HTTP 변경 성공을 실패로 뒤집지 않습니다. 삭제 실패 시 오래된 값은 TTL이 끝날 때까지 남을 수 있으므로 `redis_errors{operation="invalidate"}`를 관찰해야 합니다.
+
+보상 경로도 PostgreSQL의 보상 쓰기 결과가 성공한 뒤 `InvalidateAsync(playerId)`를 호출합니다. Replay(동일 요청 결과 재생)에도 다시 삭제를 시도해, 이전 호출이 DB Commit과 캐시 삭제 사이에서 중단된 경우를 복구합니다.
+
+### 13.5 테스트 코드를 실행 가능한 사용 예로 읽는다
+
+HTTP 경계 테스트 원본: [`PlayerProgressionHttpTests`](../../tests/CoopGameServer.IntegrationTests/Controllers/PlayerProgressionHttpTests.cs)
+
+```csharp
+Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync(path)).StatusCode);
+
+Authenticate(client, Guid.NewGuid());
+Assert.Equal(HttpStatusCode.Forbidden, (await client.GetAsync(path)).StatusCode);
+
+Authenticate(client, playerId);
+var response = await client.GetAsync(path);
+response.EnsureSuccessStatusCode();
+```
+
+이 코드는 토큰 없음 401, 다른 Player 토큰 403, 본인 토큰 200을 실제 ASP.NET Core Middleware(미들웨어, 요청 처리 파이프라인)를 통과해 검증합니다. Controller 메서드를 직접 호출하는 테스트보다 넓은 범위를 증명합니다.
+
+동시 Miss 테스트 원본: [`PlayerGrainTests.ConcurrentFirstPageMissesProduceSingleDatabaseFill`](../../tests/CoopGameServer.IntegrationTests/Grains/Players/PlayerGrainTests.cs)
+
+```csharp
+var requests = Enumerable.Range(0, requestCount)
+    .Select(_ => player.GetProgressionPageAsync(
+        new GetPlayerProgressionPageQuery(PageSize: 20, ContinuationToken: null)))
+    .ToArray();
+
+var results = await Task.WhenAll(requests);
+
+Assert.All(results, result => Assert.Equal(PlayerProgressionQueryError.None, result.Error));
+Assert.Equal(1, Volatile.Read(ref databaseFillCount));
+```
+
+같은 Player에 20개 요청을 동시에 보내도 현재 Cluster의 PlayerGrain 직렬 실행 때문에 DB 채움 지표가 1회인지 확인합니다. 이 결과를 여러 Cluster의 중복 활성화까지 일반화할 수는 없습니다.
+
+Redis 지연·중단 테스트 원본: [`RedisPlayerProgressionCacheTests.TimeoutAndDisconnectedMutationsAreReportedWithoutEscaping`](../../tests/CoopGameServer.IntegrationTests/Grains/Players/RedisPlayerProgressionCacheTests.cs)
+
+```csharp
+await connection.GetDatabase().ExecuteAsync("CLIENT", "PAUSE", 750, "ALL");
+var timeoutRead = await cache.ReadFirstPageAsync(playerId, pageSize: 20);
+
+Assert.Equal(PlayerProgressionCacheReadStatus.Error, timeoutRead.Status);
+Assert.Null(timeoutRead.Value);
+```
+
+테스트용 Redis를 750ms 멈추고 캐시 제한 75ms가 먼저 끝나는지 확인합니다. 이어서 컨테이너를 중지한 뒤 `WriteFirstPageAsync`와 `InvalidateAsync`가 예외를 호출자에게 넘기지 않고 `write`, `invalidate` 오류 지표를 남기는지도 검증합니다.
+
+## 14. 남은 범위
 
 - 현재 Orleans Cluster의 같은 Player·같은 첫 페이지는 동시 요청 20개가 DB 채움 1회로 수렴합니다. 다중 Cluster 분리 운영·비정상 중복 활성화와 실제 부하 규모는 운영 확장 검증 대상입니다.
 - 외부 Metrics Exporter와 Dashboard

@@ -8,6 +8,7 @@ Follow [AGENTS.md](../../AGENTS.md); recheck volatile facts.
 - Week 5 Player progression Redis Cache-Aside is implemented, locally validated, pushed, and verified by remote CI.
 - Local teaching record: [Week 5 Redis progression cache](../design/week-05-redis-progression-cache.md).
 - Notion teaching page: [Week 5 learning note](https://app.notion.com/p/3caff0d6971781fa9e51e7f099994498), synchronized on 2026-09-17.
+- Both Week 5 teaching records include a source-code walkthrough from HTTP authorization through Grain Cache-Aside, PostgreSQL snapshot reads, Redis failure handling, invalidation, and executable integration tests.
 - PostgreSQL remains the durable source of truth. Redis is a deletable first-page read cache.
 
 ## Checkout snapshot
