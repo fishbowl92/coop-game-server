@@ -1,25 +1,27 @@
 # Current work handoff
 
-Updated: 2026-09-16 (Asia/Seoul). Snapshot, not live status.
+Updated: 2026-09-17 (Asia/Seoul). Snapshot, not live status.
 Follow [AGENTS.md](../../AGENTS.md); recheck volatile facts.
 
 ## Active work
 
-- Week 5 Player progression Redis Cache-Aside is implemented and locally validated.
+- Week 5 Player progression Redis Cache-Aside is implemented, locally validated, pushed, and verified by remote CI.
 - Local teaching record: [Week 5 Redis progression cache](../design/week-05-redis-progression-cache.md).
-- Notion teaching page: [Week 5 learning note](https://app.notion.com/p/3caff0d6971781fa9e51e7f099994498), updated to implementation-complete status on 2026-09-16.
+- Notion teaching page: [Week 5 learning note](https://app.notion.com/p/3caff0d6971781fa9e51e7f099994498), synchronized on 2026-09-17.
 - PostgreSQL remains the durable source of truth. Redis is a deletable first-page read cache.
 
 ## Checkout snapshot
 
 - Root: `C:\Users\Administrator\source\repos\CoopGameServer`.
 - Branch: `main`.
-- Baseline before this task: `b3315c2`.
+- Baseline before Week 5: `b3315c2`.
 - Agent guide commit: `6f91409`.
 - Week 5 implementation commit: `c5ee4bc`.
-- Week 5 test commit: `2932c6d`.
-- The final metric-scope correction and documentation are included in the current HEAD.
-- Pre-existing untracked Notion review data under `CoopGameServer/notion-review/2026-09-07/` remains untouched and must stay out of task staging.
+- Week 5 base test commit: `2932c6d`.
+- Week 5 operational-edge test commit: `7cd4a84`.
+- Published source/test commit: `7cd4a841ce1dd3fcf434d62bfb6ecb5da324a8cf`.
+- Remote evidence: [GitHub Actions CI #35196252235](https://github.com/fishbowl92/coop-game-server/actions/runs/35196252235), success on 2026-09-17.
+- Pre-existing untracked review data contains 26 Markdown files under `CoopGameServer/notion-review/2026-09-07/`. It remains untouched and excluded from task staging.
 
 ## Implemented behavior
 
@@ -33,22 +35,23 @@ Follow [AGENTS.md](../../AGENTS.md); recheck volatile facts.
 
 ## Validation observed now
 
+- `dotnet format` verification passed for every C# file changed in the Week 5 completion.
 - `dotnet build CoopGameServer.slnx --configuration Release --no-incremental` passed with zero warnings and errors.
 - `dotnet test CoopGameServer.slnx --configuration Release --no-build` passed for the complete unit and integration suites.
 - Integration validation used real PostgreSQL and Redis Testcontainers.
-- Targeted tests passed for corrupt cache repair, nickname-driven key deletion, Redis-unavailable query/reward/replay behavior, and continuation-page metric exclusion.
-- Task C# files pass `dotnet format --verify-no-changes` when scoped with `--include`.
+- A live Redis pause proved the cache operation timeout; a stopped isolated Redis proved SET and DEL failures stay inside the cache boundary.
+- Twenty concurrent first-page requests for the same Player produced one database fill in the current Orleans cluster.
 - Repository-wide format verification still reports pre-existing line-ending, encoding, and import-order findings outside this task. Do not normalize unrelated files as part of Week 5.
 
 ## Outstanding boundaries
 
-- No push or remote CI run has been performed for the new local commits.
-- Exact delayed-GET timeout injection, individual Redis SET/DEL failure injection, and concurrent-miss load measurement remain operational test extensions.
-- The TTL and timeout are initial values; tune them only from observed latency, fallback, and database-load evidence.
-- Metrics export and dashboards remain Week 7 scope. Session, distributed rate-limit, and idempotency lookup caches remain outside this slice.
+- TTL and timeout values are initial operating values; tune them from observed production-like latency, fallback, and database-load evidence.
+- Metrics export and dashboards remain Week 7 scope.
+- Redis authentication, TLS, and managed-service configuration remain deployment scope.
+- Session, distributed rate-limit, and idempotency lookup caches remain outside this slice.
+- Multi-cluster and abnormal duplicate-activation behavior require a deployment topology before meaningful load validation.
 
 ## Next action
 
-Push the local commits only within explicit authorization, then bind remote CI evidence
-to the pushed commit. Start Week 6 from the accepted roadmap after preserving this cache
-correctness boundary.
+Week 5 is closed. Start Week 6 from the accepted roadmap while preserving the PostgreSQL
+correctness boundary and the Redis failure behavior recorded here.

@@ -159,6 +159,7 @@ Player ID를 태그로 넣지 않았습니다. Player마다 새 시계열이 생
 - `Silo/appsettings.json`: 로컬 Redis 주소와 초기 캐시 설정
 - `PlayerProgressionHttpTests.cs`: 실제 JWT·HTTP·Grain·DB·Redis 연결과 닉네임 변경 뒤 캐시 삭제 검증
 - `PlayerProgressionCacheMetricsTests.cs`: 지표 이름과 태그 계약 검증
+- `RedisPlayerProgressionCacheTests.cs`: 실제 Redis 지연·중단에서 Timeout과 SET·DEL 실패 흡수 검증
 
 ### 변경
 
@@ -169,7 +170,7 @@ Player ID를 태그로 넣지 않았습니다. Player마다 새 시계열이 생
 - `PlayersController.GetPlayerProgression(playerId, pageSize, continuationToken, cancellationToken)`: 인증된 결합 조회 API
 - `PlayersController.UpdatePlayerNickname(...)`: DB Commit 뒤 캐시 삭제 요청
 - `OrleansTestClusterFixture`: 실제 Redis Testcontainer 등록
-- `PlayerGrainTests`: 캐시 저장·적중·명시적/보상 무효화·TTL·손상값 복구·Redis 장애 중 조회와 보상 재생·연속 페이지 지표 제외 검증
+- `PlayerGrainTests`: 캐시 저장·적중·명시적/보상 무효화·TTL·손상값 복구·Redis 장애 중 조회와 보상 재생·연속 페이지 지표 제외·동시 첫 페이지 요청 20개의 DB 채움 1회 수렴 검증
 
 삭제한 공개 함수나 데이터베이스 열은 없습니다. 새 DB Migration(마이그레이션)도 없습니다.
 
@@ -181,22 +182,26 @@ Player ID를 태그로 넣지 않았습니다. Player마다 새 시계열이 생
 - 장애 통합 테스트: Redis가 연결될 수 없는 별도 TestCluster에서도 PostgreSQL 조회, 보상 지급, 동일 요청 Replay 유지
 - HTTP 통합 테스트: 토큰 없음 401, 다른 Player 403, 본인 200, 입력 오류 400, 닉네임 변경 뒤 실제 Redis Key 삭제
 - 지표 통합 테스트: 캐시 대상인 첫 페이지 DB 조회만 `database_fill_duration`에 기록하고 연속 페이지는 제외
+- 지연 통합 테스트: 정상 Cache Hit를 확인한 뒤 Redis `CLIENT PAUSE 750`에서 75ms 작업 한도로 Error 전환
+- 중단 통합 테스트: Redis 컨테이너 중지 뒤 SET·DEL 실패가 호출자에게 예외를 던지지 않고 오류 지표 기록
+- 동시성 통합 테스트: 같은 Player 첫 페이지 요청 20개가 Orleans 직렬 처리로 DB 채움 1회에 수렴
 
 직접 Controller를 호출하는 단위 테스트만으로는 JWT Middleware(미들웨어)를 증명할 수 없습니다. 그래서 `WebApplicationFactory`로 실제 ASP.NET Core 요청 파이프라인을 통과하는 테스트를 추가했습니다.
 
-## 12. 2026-09-16 검증 결과
+## 12. 2026-09-17 검증 결과
 
 - `dotnet build CoopGameServer.slnx --configuration Release --no-incremental`: 경고 0개, 오류 0개
-- `dotnet test CoopGameServer.slnx --configuration Release --no-build`: 단위 110개, 통합 130개, 총 240개 통과
+- `dotnet test CoopGameServer.slnx --configuration Release --no-build`: 단위 110개, 통합 132개, 총 242개 통과
 - 통합 테스트는 Testcontainers가 만든 PostgreSQL과 Redis를 사용합니다.
 - 별도 Orleans TestCluster에 닫힌 Redis 포트를 주입해 조회 Fallback, 보상 지급, 같은 요청 Replay를 확인했습니다.
 - 손상 JSON 복구, 닉네임 변경 HTTP 뒤 실제 Redis Key 삭제, 연속 페이지의 DB 채움 지표 제외를 각각 확인했습니다.
+- 실제 Redis 명령 지연, 컨테이너 중단 뒤 SET·DEL 실패, 같은 Player 동시 Miss 20개를 추가로 확인했습니다.
 
-전체 테스트 통과는 현재 로컬 커밋의 코드 동작을 증명합니다. 원격 Push와 GitHub Actions CI(Continuous Integration, 지속적 통합)는 별도 상태입니다.
+커밋 `7cd4a84`를 GitHub `main`에 Push했고 [GitHub Actions CI #35196252235](https://github.com/fishbowl92/coop-game-server/actions/runs/35196252235)가 성공했습니다. 로컬 검증과 원격 CI는 같은 코드·테스트 커밋을 대상으로 합니다.
 
 ## 13. 남은 범위
 
-- Cache Stampede(캐시 만료 순간 동시 DB 조회 집중) 방지용 분산 잠금 또는 요청 합치기
+- 현재 Orleans Cluster의 같은 Player·같은 첫 페이지는 동시 요청 20개가 DB 채움 1회로 수렴합니다. 다중 Cluster 분리 운영·비정상 중복 활성화와 실제 부하 규모는 운영 확장 검증 대상입니다.
 - 외부 Metrics Exporter와 Dashboard
 - 다중 API/Silo 운영 환경의 부하 측정과 timeout 재조정
 - Redis 인증·TLS(Transport Layer Security, 전송 계층 보안)·관리형 서비스 설정
