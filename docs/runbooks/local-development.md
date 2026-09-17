@@ -141,7 +141,27 @@ Invoke-RestMethod -Uri "http://localhost:5265/api/players/$($authentication.play
 
 회원 가입은 Player와 일반 Account를 만들고 JWT를 반환합니다. 이후 `Authorization: Bearer <토큰>` 헤더를 넣어야 Player·Party API를 호출할 수 있습니다. `$authentication.accessToken`은 비밀번호처럼 취급하고 Git이나 화면 공유에 남기지 않습니다.
 
-Ping Grain과 보상 지급은 관리자 역할이 필요한 운영 API입니다. 관리자 계정 초기화 도구는 아직 구현하지 않았으므로 일반 가입 계정으로는 403 Forbidden을 받는 것이 정상입니다.
+Ping Grain과 보상 지급은 관리자 역할이 필요한 운영 API입니다. 일반 가입 계정으로는 403 Forbidden을 받는 것이 정상입니다.
+
+## 9. 개발 관리자와 Blazor 운영 도구 실행
+
+개발 관리자 자동 생성은 `Development` 환경에서 User Secrets의 세 값이 모두 있을 때만 동작합니다. 비밀번호는 Git이나 이 문서에 기록하지 않습니다.
+
+```powershell
+dotnet user-secrets set "DevelopmentAdministrator:LoginId" "local_admin" --project .\src\CoopGameServer.Api\CoopGameServer.Api.csproj
+dotnet user-secrets set "DevelopmentAdministrator:Password" "<8자 이상의 개발 비밀번호>" --project .\src\CoopGameServer.Api\CoopGameServer.Api.csproj
+dotnet user-secrets set "DevelopmentAdministrator:Nickname" "LocalAdmin" --project .\src\CoopGameServer.Api\CoopGameServer.Api.csproj
+```
+
+API를 다시 시작하면 계정이 없을 때만 Player와 관리자 Account를 함께 생성합니다. 같은 로그인 ID의 일반 계정이나 같은 닉네임의 기존 Player를 자동 승격·재사용하지 않습니다.
+
+별도 PowerShell 창에서 운영 도구를 실행합니다.
+
+```powershell
+dotnet run --project .\src\CoopGameServer.Admin\CoopGameServer.Admin.csproj --launch-profile https
+```
+
+브라우저의 `https://localhost:7248`에서 관리자 계정으로 로그인합니다. 운영 도구는 기본적으로 `https://localhost:7238` API만 호출하며 PostgreSQL이나 Orleans Grain에 직접 연결하지 않습니다. API 주소를 바꿨다면 `src/CoopGameServer.Admin/appsettings.json`의 `AdminApi:BaseUrl`을 개발 환경 설정으로 덮어씁니다.
 
 ## 상태·로그 확인
 
