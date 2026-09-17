@@ -423,6 +423,41 @@ public sealed class PlayerGrainTests(OrleansTestClusterFixture fixture)
     }
 
     [Fact]
+    public async Task ConcurrentFirstPageMissesProduceSingleDatabaseFill()
+    {
+        const int requestCount = 20;
+        var playerId = Guid.NewGuid();
+        await _fixture.RegisterPlayersAsync(playerId);
+        var player = GetPlayer(playerId);
+        var databaseFillCount = 0;
+
+        using var listener = new MeterListener();
+        listener.InstrumentPublished = (instrument, activeListener) =>
+        {
+            if (instrument.Meter.Name == "CoopGameServer.PlayerProgressionCache" &&
+                instrument.Name == "coopgame.player_progression_cache.database_fill_duration")
+            {
+                activeListener.EnableMeasurementEvents(instrument);
+            }
+        };
+        listener.SetMeasurementEventCallback<double>(
+            (_, _, _, _) => Interlocked.Increment(ref databaseFillCount));
+        listener.Start();
+
+        // 같은 PlayerGrain은 요청을 순서대로 처리합니다. 첫 요청만 DB에서 채우고,
+        // 뒤에 대기한 요청은 Redis Hit가 되어 같은 키의 Cache Stampede를 만들지 않아야 합니다.
+        var requests = Enumerable.Range(0, requestCount)
+            .Select(_ => player.GetProgressionPageAsync(
+                new GetPlayerProgressionPageQuery(PageSize: 20, ContinuationToken: null)))
+            .ToArray();
+
+        var results = await Task.WhenAll(requests);
+
+        Assert.All(results, result => Assert.Equal(PlayerProgressionQueryError.None, result.Error));
+        Assert.Equal(1, Volatile.Read(ref databaseFillCount));
+    }
+
+    [Fact]
     public async Task ContinuationPageDoesNotRecordCacheDatabaseFillDuration()
     {
         var playerId = Guid.NewGuid();
