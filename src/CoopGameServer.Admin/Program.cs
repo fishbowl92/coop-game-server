@@ -12,6 +12,7 @@ builder.Services.AddHttpClient("GameApi", client =>
 builder.Services.AddScoped<AdminSession>();
 builder.Services.AddScoped<AdminApiClient>();
 builder.Services.AddScoped<AdminRewardSubmissionState>();
+builder.Services.AddScoped<AdminOperationsState>();
 
 var app = builder.Build();
 

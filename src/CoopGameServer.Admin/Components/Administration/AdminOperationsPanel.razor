@@ -1,0 +1,148 @@
+@inject AdminSession Session
+@inject AdminRewardSubmissionState RewardState
+@inject AdminOperationsState Operations
+
+<PageTitle>CoopGameServer 운영 도구</PageTitle>
+
+<h1>플레이어 보상 운영</h1>
+<p class="lead">관리자 로그인, 플레이어 조회, 현재 진행도 확인, 감사 가능한 수동 보상 지급을 한 화면에서 처리합니다.</p>
+
+@if (!Session.IsAuthenticated)
+{
+    <section class="panel compact">
+        <h2>관리자 로그인</h2>
+        <label>로그인 ID<input @bind="loginId" autocomplete="username" disabled="@Operations.IsBusy" /></label>
+        <label>비밀번호<input type="password" @bind="password" autocomplete="current-password" disabled="@Operations.IsBusy" /></label>
+        <button @onclick="SignInAsync" disabled="@Operations.IsBusy">로그인</button>
+    </section>
+}
+else
+{
+    <section class="session">
+        <span><strong>@Session.LoginId</strong> 로그인됨</span>
+        <button class="secondary" @onclick="Operations.SignOut" disabled="@Operations.IsBusy">로그아웃</button>
+    </section>
+
+    @if (Operations.LastReceipt is { } receipt)
+    {
+        <section class="panel receipt" role="status">
+            <h2>마지막 보상 지급 완료 @(receipt.IsReplay ? "— 기존 요청 결과 확인" : "")</h2>
+            <p>대상: <code>@receipt.PlayerId</code> · 요청 ID: <code>@receipt.RequestId</code></p>
+            <p>골드 @receipt.GoldAmount · 아이템 @(receipt.ItemId is null ? "없음" : $"{receipt.ItemId} × {receipt.ItemQuantity}") · 사유: @receipt.Reason</p>
+            <p class="muted">서버에서 확인한 지급 결과입니다. 아래 정보 조회가 실패해도 이 지급은 완료된 상태입니다.</p>
+        </section>
+    }
+
+    @if (RewardState.Pending is { } pending)
+    {
+        <section class="panel pending" role="status">
+            <h2>결과 확인이 필요한 보상 요청</h2>
+            @if (Operations.IsPendingForCurrentAdministrator)
+            {
+                <p>대상: <code>@pending.PlayerId</code> · 요청 ID: <code>@pending.Request.RequestId</code></p>
+                <p>골드 @pending.Request.GoldAmount · 아이템 @(pending.Request.ItemId is null ? "없음" : $"{pending.Request.ItemId} × {pending.Request.ItemQuantity}") · 사유: @pending.Request.Reason</p>
+                <p>처음 전송한 대상과 내용으로 다시 확인합니다. 확인 전에는 대상과 보상 내용을 바꿀 수 없습니다.</p>
+                <button @onclick="Operations.GrantAsync" disabled="@(!Operations.CanGrant)">같은 요청으로 결과 확인</button>
+            }
+            else
+            {
+                <p>처음 전송한 관리자 계정으로 다시 로그인해 결과를 확인하세요.</p>
+            }
+        </section>
+    }
+
+    <section class="panel">
+        <h2>1. 플레이어 찾기</h2>
+        <div class="row">
+            <input class="grow" @bind="searchQuery" placeholder="Player Guid 또는 정확한 닉네임" disabled="@(!Operations.CanLookup)" />
+            <button @onclick="LookupAsync" disabled="@(!Operations.CanLookup)">조회</button>
+            <button class="secondary" @onclick="Operations.RefreshAsync" disabled="@(!Operations.CanRefresh)">정보 새로고침</button>
+        </div>
+    </section>
+
+    @if (Operations.Selection is { } selection)
+    {
+        var player = selection.Player;
+        var progression = selection.Progression;
+        var history = selection.History;
+        <section class="grid">
+            <article class="panel">
+                <h2>2. 현재 진행도</h2>
+                @if (Operations.RequiresRefresh)
+                {
+                    <p class="warning-text">이전 조회 결과입니다. 정보 새로고침이 성공한 뒤 새 보상을 지급할 수 있습니다.</p>
+                }
+                <dl>
+                    <dt>Player ID</dt><dd><code>@player.PlayerId</code></dd>
+                    <dt>닉네임</dt><dd>@player.Nickname</dd>
+                    <dt>골드</dt><dd>@progression.Gold</dd>
+                    <dt>아이템</dt><dd>@(progression.Items.Length == 0 ? "없음" : string.Join(", ", progression.Items.Select(x => $"{x.ItemId} × {x.Quantity}")))</dd>
+                </dl>
+            </article>
+
+            @if (RewardState.Pending is null)
+            {
+                <article class="panel">
+                    <h2>3. 보상 지급</h2>
+                    <p class="muted">요청 ID: <code>@RewardState.RequestId</code></p>
+                    <fieldset disabled="@(!Operations.CanEditReward || Operations.RequiresRefresh)">
+                        <label>골드<input type="number" @bind="RewardState.GoldAmount" min="0" /></label>
+                        <label>아이템 ID<input type="number" @bind="RewardState.ItemId" min="1" /></label>
+                        <label>아이템 수량<input type="number" @bind="RewardState.ItemQuantity" min="1" /></label>
+                        <label>지급 사유<textarea @bind="RewardState.Reason" maxlength="100"></textarea></label>
+                    </fieldset>
+                    <button class="danger" @onclick="Operations.GrantAsync" disabled="@(!Operations.CanGrant)">보상 지급</button>
+                    <p class="muted">결과가 불확실하면 처음 전송한 대상·내용·요청 ID를 유지해 다시 확인합니다.</p>
+                </article>
+            }
+        </section>
+
+        <section class="panel">
+            <h2>최근 보상 이력</h2>
+            @if (history.Length == 0)
+            {
+                <p>보상 이력이 없습니다.</p>
+            }
+            else
+            {
+                <div class="table-wrap">
+                    <table>
+                        <thead><tr><th>시각(UTC)</th><th>골드</th><th>아이템</th><th>사유</th><th>실행 관리자</th><th>요청 ID</th></tr></thead>
+                        <tbody>
+                        @foreach (var entry in history)
+                        {
+                            <tr>
+                                <td>@entry.CreatedAt.ToString("u")</td>
+                                <td>@entry.GoldAmount</td>
+                                <td>@(entry.ItemId is null ? "-" : $"{entry.ItemId} × {entry.ItemQuantity}")</td>
+                                <td>@entry.Reason</td>
+                                <td>@(entry.AdministratorLoginId ?? "게임 시스템")</td>
+                                <td><code>@entry.RequestId</code></td>
+                            </tr>
+                        }
+                        </tbody>
+                    </table>
+                </div>
+            }
+        </section>
+    }
+}
+
+@if (!string.IsNullOrWhiteSpace(Operations.Message))
+{
+    <p class="message @Operations.MessageStyle" role="status">@Operations.Message</p>
+}
+
+@code {
+    private string loginId = string.Empty;
+    private string password = string.Empty;
+    private string searchQuery = string.Empty;
+
+    private async Task SignInAsync()
+    {
+        await Operations.SignInAsync(loginId, password);
+        password = string.Empty;
+    }
+
+    private Task LookupAsync() => Operations.LookupAsync(searchQuery);
+}
