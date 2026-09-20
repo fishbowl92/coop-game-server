@@ -1,6 +1,6 @@
 # Current work handoff
 
-Updated: 2026-09-18 (Asia/Seoul). Snapshot, not live status.
+Updated: 2026-09-21 (Asia/Seoul). Snapshot, not live status.
 Follow [AGENTS.md](../../AGENTS.md); recheck volatile facts.
 
 ## Active work
@@ -27,7 +27,7 @@ Follow [AGENTS.md](../../AGENTS.md); recheck volatile facts.
 - `eb277eb` — administrator audit domain, migrations, atomic persistence, and persistence tests.
 - `dcb7400` — administrator authorization, query APIs, development bootstrap, and HTTP tests.
 - `596dc01` — Blazor administrator operations tool and retry-state tests.
-- Current documentation HEAD — Week 6 design, Korean code walkthrough, runbook, and handoff documentation.
+- `6792d86` — Week 6 design, Korean code walkthrough, runbook, and initial handoff documentation.
 
 ## Local validation
 
@@ -39,14 +39,14 @@ Follow [AGENTS.md](../../AGENTS.md); recheck volatile facts.
 
 ## Publication status
 
-- Local implementation commits: complete.
-- Push and remote CI: pending the documentation commit.
-- Week 6 Notion learning page and dashboard: pending synchronization to the pushed commit and CI evidence.
+- The four Week 6 purpose-based commits through `6792d86` are pushed to `origin/main`.
+- GitHub Actions run [#35519994002](https://github.com/fishbowl92/coop-game-server/actions/runs/35519994002) passed for exact public commit `6792d86656009e489ec48dca701cddb24011bc96`.
+- The Week 6 Notion learning page and project dashboard were synchronized to that public commit and CI evidence on 2026-09-21.
 
 ## Workspace note
 
 - The pre-existing untracked `CoopGameServer/` review-data directory remains untouched and excluded from staging.
-- Repository-wide formatting removed unused imports or byte-order marks in 14 Week 6-unrelated tracked files. They remain unstaged and excluded from all purpose-based commits. Restore requires explicit approval after automatic safety review rejected the multi-file restore.
+- Repository-wide formatting changes in 14 Week 6-unrelated tracked files were restored. No unrelated tracked changes remain.
 
 ## Outstanding boundaries
 
@@ -57,4 +57,4 @@ Follow [AGENTS.md](../../AGENTS.md); recheck volatile facts.
 
 ## Next action
 
-Push all four Week 6 commits, bind remote CI evidence to the exact public HEAD, and synchronize the Week 6 Notion page and project dashboard.
+Start Week 7 observability work by tracing one administrator reward request across API, Orleans, PostgreSQL, and cache invalidation, then add secret-safe structured logs and useful metrics.
