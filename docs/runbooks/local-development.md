@@ -1,6 +1,6 @@
 # 로컬 개발 환경 실행 절차
 
-이 문서는 개발 PC에서 PostgreSQL·Redis·Orleans Silo·ASP.NET Core API를 시작하고 검증하고 종료하는 절차를 기록합니다. 모든 명령은 `CoopGameServer.slnx`가 있는 저장소 최상위 폴더에서 실행합니다.
+이 문서는 개발 PC에서 PostgreSQL·Redis·관측성 대시보드·Orleans Silo·ASP.NET Core API를 시작하고 검증하고 종료하는 절차를 기록합니다. 모든 명령은 `CoopGameServer.slnx`가 있는 저장소 최상위 폴더에서 실행합니다.
 
 ## 시작 전 확인
 
@@ -9,8 +9,9 @@
 - `.env`는 실제 비밀번호를 담으므로 GitHub에 올리면 안 됩니다.
 - PostgreSQL 기본 호스트 포트는 `15432`이며 컨테이너 내부 포트는 `5432`입니다.
 - `.env`의 `POSTGRES_HOST_PORT`를 바꾸면 API User Secrets의 `Port`도 같은 값으로 바꿔야 합니다.
+- 관측성 대시보드는 `18888`, OTLP/gRPC는 `4317`, OTLP/HTTP는 `4318`을 사용하며 모두 `127.0.0.1`에만 바인딩됩니다.
 
-## 1. PostgreSQL·Redis 시작
+## 1. PostgreSQL·Redis·관측성 대시보드 시작
 
 반복되는 시작 절차는 다음 PowerShell 스크립트로 실행합니다.
 
@@ -22,7 +23,7 @@
 
 1. Docker Desktop Engine 연결 확인
 2. `docker compose up -d` 실행
-3. PostgreSQL과 Redis가 `healthy` 상태가 될 때까지 대기
+3. PostgreSQL과 Redis는 `healthy`, Healthcheck가 없는 대시보드는 `running` 상태가 될 때까지 대기
 4. `docker compose ps`와 `git status` 출력
 
 `tools\Start-LocalEnvironment.cmd`를 더블클릭해도 같은 스크립트가 실행됩니다. CMD(Command, Windows 명령 프롬프트 배치 파일)는 PowerShell 실행을 연결하는 포장 파일이고, 실제 준비 로직은 PS1(PowerShell Script, PowerShell 스크립트 파일)에 있습니다.
@@ -36,12 +37,15 @@ docker compose ps
 
 - `up`: `compose.yaml`에 정의한 서비스를 생성하거나 시작합니다.
 - `-d`: detached mode(디태치드 모드, 터미널을 점유하지 않는 백그라운드 실행)입니다.
-- 준비 완료 기준은 두 서비스 모두 `healthy`입니다.
+- 준비 완료 기준은 PostgreSQL·Redis가 `healthy`이고 대시보드가 `running`인 상태입니다.
 
 기본 포트 연결:
 
 - PostgreSQL: 호스트 `127.0.0.1:15432` → 컨테이너 `5432`
 - Redis: 호스트 `127.0.0.1:6379` → 컨테이너 `6379`
+- Aspire Dashboard: 호스트 `127.0.0.1:18888` → 컨테이너 `18888`
+- OTLP/gRPC: 호스트 `127.0.0.1:4317` → 컨테이너 `18889`
+- OTLP/HTTP: 호스트 `127.0.0.1:4318` → 컨테이너 `18890`
 
 `127.0.0.1`은 loopback address(루프백 주소, 현재 PC 자신만 접근하는 주소)입니다. 개발 DB와 Redis가 같은 네트워크의 다른 PC에 노출되지 않게 합니다.
 
@@ -130,7 +134,17 @@ dotnet run --project .\src\CoopGameServer.Api\CoopGameServer.Api.csproj
 
 API는 Player·Reward 요청을 PostgreSQL로 처리하고, Party·Matchmaking·GameRoom 요청은 Orleans Client를 통해 Silo의 Grain으로 전달합니다. API와 Silo는 별도 프로세스이므로 동시에 실행되어야 Party·매칭·게임 방·Ping 경로가 성공합니다.
 
-## 8. 로그인과 본인 API 확인 — PowerShell 창 C
+두 실행 프로젝트는 Content Root를 빌드 출력 폴더로 고정하므로, 위 명령을 문서 첫머리의 저장소 최상위 폴더에서 실행해도 각 프로젝트의 `appsettings.json`과 `appsettings.Development.json`을 읽습니다.
+
+## 8. 관측성 대시보드 확인
+
+브라우저에서 `http://localhost:18888`을 엽니다. 이 주소는 로컬 loopback에만 바인딩되며 Compose에서는 개발 편의를 위해 인증을 생략합니다. 외부 네트워크나 운영 환경에는 같은 설정으로 공개하지 않습니다.
+
+API와 Silo를 `Development` 환경으로 실행하면 각각 `CoopGameServer.Api`, `CoopGameServer.Silo`라는 서비스 이름으로 로그·지표·추적을 `http://localhost:4317`에 보냅니다. 관리자 보상이나 진행도 조회를 실행한 뒤 Dashboard의 Traces 화면에서 API → Orleans → PostgreSQL·Redis 구간을 확인합니다.
+
+Dashboard가 꺼져 있어도 게임 기능은 계속 동작합니다. OTLP 내보내기는 업무 결과와 분리된 백그라운드 작업입니다.
+
+## 9. 로그인과 본인 API 확인 — PowerShell 창 C
 
 ```powershell
 $registerBody = @{ loginId = "my_login"; password = "8자 이상 비밀번호"; nickname = "MyPlayer" } | ConvertTo-Json
@@ -143,7 +157,7 @@ Invoke-RestMethod -Uri "http://localhost:5265/api/players/$($authentication.play
 
 Ping Grain과 보상 지급은 관리자 역할이 필요한 운영 API입니다. 일반 가입 계정으로는 403 Forbidden을 받는 것이 정상입니다.
 
-## 9. 개발 관리자와 Blazor 운영 도구 실행
+## 10. 개발 관리자와 Blazor 운영 도구 실행
 
 개발 관리자 자동 생성은 `Development` 환경에서 User Secrets의 세 값이 모두 있을 때만 동작합니다. 비밀번호는 Git이나 이 문서에 기록하지 않습니다.
 
@@ -173,6 +187,7 @@ docker compose logs
 - `ps`: 컨테이너 상태와 포트 연결을 표시합니다.
 - `logs`: 전체 컨테이너 로그를 표시합니다.
 - PostgreSQL만 보려면 `docker compose logs postgres`를 사용합니다.
+- 관측성 화면 컨테이너만 보려면 `docker compose logs observability-dashboard`를 사용합니다.
 
 ## 문제 해결
 
