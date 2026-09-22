@@ -1,8 +1,10 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Diagnostics.Metrics;
 using CoopGameServer.GrainContracts.Players;
 using CoopGameServer.Grains.Players.Caching;
 using CoopGameServer.IntegrationTests.Infrastructure;
+using CoopGameServer.Observability;
 using Microsoft.Extensions.Logging.Abstractions;
 using StackExchange.Redis;
 using Testcontainers.Redis;
@@ -16,6 +18,19 @@ public sealed class RedisPlayerProgressionCacheTests
     [Fact]
     public async Task TimeoutAndDisconnectedMutationsAreReportedWithoutEscaping()
     {
+        var activities = new ConcurrentQueue<CapturedActivity>();
+        using var activityListener = new ActivityListener
+        {
+            ShouldListenTo = source => source.Name == CoopGameServerTelemetry.ActivitySourceName,
+            Sample = static (ref ActivityCreationOptions<ActivityContext> _) =>
+                ActivitySamplingResult.AllDataAndRecorded,
+            ActivityStopped = activity => activities.Enqueue(new CapturedActivity(
+                activity.OperationName,
+                activity.Status,
+                activity.TagObjects.ToDictionary(tag => tag.Key, tag => tag.Value?.ToString()))),
+        };
+        ActivitySource.AddActivityListener(activityListener);
+
         await using var redisContainer = new RedisBuilder("redis:7-alpine").Build();
         await redisContainer.StartAsync();
 
@@ -97,5 +112,31 @@ public sealed class RedisPlayerProgressionCacheTests
 
         Assert.Contains("write", redisErrorOperations);
         Assert.Contains("invalidate", redisErrorOperations);
+
+        Assert.Contains(activities, activity =>
+            activity.OperationName == "redis.progression.read" &&
+            activity.Tags["coopgame.cache.result"] == "hit");
+        Assert.Contains(activities, activity =>
+            activity.OperationName == "redis.progression.read" &&
+            activity.Status == ActivityStatusCode.Error &&
+            activity.Tags["coopgame.cache.result"] == "error");
+        Assert.Contains(activities, activity =>
+            activity.OperationName == "redis.progression.write" &&
+            activity.Status == ActivityStatusCode.Error);
+        Assert.Contains(activities, activity =>
+            activity.OperationName == "redis.progression.invalidate" &&
+            activity.Status == ActivityStatusCode.Error);
+
+        var traceText = string.Join(
+            '|',
+            activities.SelectMany(activity => activity.Tags)
+                .Select(tag => $"{tag.Key}={tag.Value}"));
+        Assert.DoesNotContain(playerId.ToString(), traceText, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(options.KeyPrefix, traceText, StringComparison.Ordinal);
     }
+
+    private sealed record CapturedActivity(
+        string OperationName,
+        ActivityStatusCode Status,
+        IReadOnlyDictionary<string, string?> Tags);
 }

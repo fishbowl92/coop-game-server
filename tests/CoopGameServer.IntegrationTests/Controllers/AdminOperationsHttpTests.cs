@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.IdentityModel.Tokens.Jwt;
 using System.Net;
 using System.Net.Http.Headers;
@@ -9,6 +11,7 @@ using CoopGameServer.Contracts.Administration;
 using CoopGameServer.Contracts.Rewards;
 using CoopGameServer.Domain.Accounts;
 using CoopGameServer.IntegrationTests.Infrastructure;
+using CoopGameServer.Observability;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
@@ -123,6 +126,70 @@ public sealed class AdminOperationsHttpTests(OrleansTestClusterFixture fixture)
         Assert.Equal(HttpStatusCode.Conflict, (await client.PostAsJsonAsync(path, request)).StatusCode);
     }
 
+    /// <summary>HTTP에서 시작한 Trace가 Orleans를 지나 PostgreSQL 보상 구간까지 같은 ID로 이어지는지 검증합니다.</summary>
+    [Fact]
+    public async Task RewardRequestPropagatesTraceWithoutRecordingRequestBodyOrCredentials()
+    {
+        const string privateReason = "trace-private-reason-marker";
+        var activities = new ConcurrentQueue<CapturedActivity>();
+        using var listener = new ActivityListener
+        {
+            ShouldListenTo = source =>
+                source.Name == CoopGameServerTelemetry.ActivitySourceName ||
+                source.Name.StartsWith("Microsoft.AspNetCore", StringComparison.Ordinal),
+            Sample = static (ref ActivityCreationOptions<ActivityContext> _) =>
+                ActivitySamplingResult.AllDataAndRecorded,
+            ActivityStopped = activity => activities.Enqueue(new CapturedActivity(
+                activity.Source.Name,
+                activity.OperationName,
+                activity.Kind,
+                activity.TraceId,
+                activity.ParentSpanId,
+                activity.TagObjects.ToDictionary(tag => tag.Key, tag => tag.Value?.ToString()))),
+        };
+        ActivitySource.AddActivityListener(listener);
+
+        var targetPlayerId = Guid.NewGuid();
+        var administratorPlayerId = Guid.NewGuid();
+        var administratorAccountId = Guid.NewGuid();
+        var requestId = Guid.NewGuid();
+        await fixture.RegisterPlayersAsync(targetPlayerId, administratorPlayerId);
+        await SeedAdministratorAsync(
+            administratorAccountId,
+            administratorPlayerId,
+            $"trace_admin_{administratorAccountId:N}"[..20]);
+
+        await using var database = fixture.CreateDbContext();
+        await using var factory = new ApiFactory(fixture, database.Database.GetConnectionString()!);
+        using var client = factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            BaseAddress = new Uri("https://localhost"),
+        });
+        Authenticate(client, administratorPlayerId, administratorAccountId, AccountRole.Administrator);
+
+        var response = await client.PostAsJsonAsync(
+            $"/api/players/{targetPlayerId}/rewards",
+            new GrantRewardRequest(requestId, 25, null, null, privateReason));
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        var rewardActivity = Assert.Single(activities, activity =>
+            activity.SourceName == CoopGameServerTelemetry.ActivitySourceName &&
+            activity.OperationName == "postgresql.reward.write");
+        Assert.Contains(activities, activity =>
+            activity.Kind == ActivityKind.Server &&
+            activity.TraceId == rewardActivity.TraceId);
+        Assert.NotEqual(default, rewardActivity.ParentSpanId);
+        Assert.Equal(requestId.ToString(), rewardActivity.Tags["coopgame.request.id"]);
+        Assert.Equal(targetPlayerId.ToString(), rewardActivity.Tags["coopgame.player.id"]);
+
+        var exportedText = string.Join(
+            '|',
+            rewardActivity.Tags.Select(tag => $"{tag.Key}={tag.Value}"));
+        Assert.DoesNotContain(privateReason, exportedText, StringComparison.Ordinal);
+        Assert.DoesNotContain(TestKey, exportedText, StringComparison.Ordinal);
+        Assert.DoesNotContain("Bearer", exportedText, StringComparison.OrdinalIgnoreCase);
+    }
+
     private async Task SeedAdministratorAsync(Guid accountId, Guid playerId, string loginId)
     {
         var account = new Account(accountId, playerId, loginId, AccountRole.Administrator, DateTimeOffset.UtcNow);
@@ -186,4 +253,12 @@ public sealed class AdminOperationsHttpTests(OrleansTestClusterFixture fixture)
             });
         }
     }
+
+    private sealed record CapturedActivity(
+        string SourceName,
+        string OperationName,
+        ActivityKind Kind,
+        ActivityTraceId TraceId,
+        ActivitySpanId ParentSpanId,
+        IReadOnlyDictionary<string, string?> Tags);
 }

@@ -1,8 +1,10 @@
 using CoopGameServer.Domain.Players;
 using CoopGameServer.Grains.Players.Caching;
+using CoopGameServer.Observability;
 using CoopGameServer.Persistence;
 using CoopGameServer.Persistence.Rewards;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Orleans.TestingHost;
@@ -51,6 +53,8 @@ public sealed class OrleansTestClusterFixture : IAsyncLifetime
         clusterBuilder.Properties[GameDbConnectionStringKey] = _postgreSqlContainer.GetConnectionString();
         clusterBuilder.Properties[RedisConnectionStringKey] = _redisContainer.GetConnectionString();
         clusterBuilder.AddSiloBuilderConfigurator<OrleansTestSiloConfigurator>();
+        clusterBuilder.AddSiloBuilderConfigurator<OrleansTestActivityPropagationConfigurator>();
+        clusterBuilder.AddClientBuilderConfigurator<OrleansTestClientActivityPropagationConfigurator>();
 
         Cluster = clusterBuilder.Build();
         await Cluster.DeployAsync();
@@ -108,6 +112,24 @@ public sealed class OrleansTestClusterFixture : IAsyncLifetime
     }
 }
 
+/// <summary>테스트 Silo가 호출자의 W3C Trace Context를 Grain 실행으로 복원하게 합니다.</summary>
+public sealed class OrleansTestActivityPropagationConfigurator : ISiloConfigurator
+{
+    public void Configure(ISiloBuilder siloBuilder)
+    {
+        siloBuilder.AddActivityPropagation();
+    }
+}
+
+/// <summary>테스트 Client가 현재 Activity의 Trace Context를 Orleans 메시지에 싣게 합니다.</summary>
+public sealed class OrleansTestClientActivityPropagationConfigurator : IClientBuilderConfigurator
+{
+    public void Configure(IConfiguration configuration, IClientBuilder clientBuilder)
+    {
+        clientBuilder.AddActivityPropagation();
+    }
+}
+
 /// <summary>TestCluster의 각 Silo에 PostgreSQL과 Redis 의존성을 등록합니다.</summary>
 public sealed class OrleansTestSiloConfigurator : IHostConfigurator
 {
@@ -122,8 +144,18 @@ public sealed class OrleansTestSiloConfigurator : IHostConfigurator
                 OrleansTestClusterFixture.RedisConnectionStringKey]
                 ?? throw new InvalidOperationException("테스트 Redis 연결 문자열이 없습니다.");
 
+            // 운영 Silo와 같은 ActivitySource·Meter를 구독해 테스트에서도 실제 추적 생성 조건을 재현합니다.
+            // 테스트 설정에는 OTLP Endpoint가 없으므로 외부 수집기로 내보내지는 않습니다.
+            var observabilityConfiguration = new ConfigurationBuilder().Build();
+            services.AddCoopGameServerObservability(
+                observabilityConfiguration,
+                "CoopGameServer.TestSilo",
+                includeAspNetCore: false);
+
+            var gameDbDataSource = GameDbDataSourceFactory.Create(gameDbConnectionString);
+            services.AddSingleton(gameDbDataSource);
             services.AddPooledDbContextFactory<GameDbContext>(options =>
-                options.UseNpgsql(gameDbConnectionString));
+                options.UseNpgsql(gameDbDataSource));
             services.AddSingleton<TimeProvider>(CombatTestTimeProvider.Shared);
             services.AddSingleton<IRewardWriter, PostgreSqlRewardWriter>();
 

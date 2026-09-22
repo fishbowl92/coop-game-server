@@ -30,6 +30,7 @@
     <ProjectReference Include="..\..\src\CoopGameServer.Persistence\CoopGameServer.Persistence.csproj" />
     <ProjectReference Include="..\..\src\CoopGameServer.GrainContracts\CoopGameServer.GrainContracts.csproj" />
     <ProjectReference Include="..\..\src\CoopGameServer.Grains\CoopGameServer.Grains.csproj" />
+    <ProjectReference Include="..\..\src\CoopGameServer.Observability\CoopGameServer.Observability.csproj" />
   </ItemGroup>
 
 </Project>
