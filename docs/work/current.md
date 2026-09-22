@@ -1,6 +1,6 @@
 # Current work handoff
 
-Updated: 2026-09-21 (Asia/Seoul). Snapshot, not live status.
+Updated: 2026-09-22 (Asia/Seoul). Snapshot, not live status.
 Follow [AGENTS.md](../../AGENTS.md); recheck volatile facts.
 
 ## Active work
@@ -28,8 +28,9 @@ Follow [AGENTS.md](../../AGENTS.md); recheck volatile facts.
 - The corrective slice passed the solution Release build and complete unit/integration regression tests.
 - Targeted administrator tests include HTTP fault injection and rendering the same Razor component used by the live page.
 - Commands, counts, and evidence scope are recorded in the fix report rather than duplicated here.
-- This corrective slice is for a local commit. It has not been pushed, and remote CI has not verified it.
-- Prior Week 6 publication records in Git and existing Notion pages describe the earlier source snapshot.
+- The corrective slice is commit `31fdc84` and is pushed to `origin/main`.
+- GitHub Actions CI run `35742052003` passed at `31fdc84` on 2026-09-22. It verifies the configured restore, build, and test workflow at that commit.
+- Existing Notion pages still describe an earlier source snapshot.
 
 ## Workspace note
 
