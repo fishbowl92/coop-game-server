@@ -33,6 +33,17 @@ services:
       timeout: 3s
       retries: 10
 
+  observability-dashboard:
+    image: mcr.microsoft.com/dotnet/aspire-dashboard:13.5.2
+    container_name: coopgame-observability-dashboard
+    environment:
+      # 로컬 PC의 loopback 포트에만 공개하므로 개발 편의를 위해 로그인 토큰을 생략합니다.
+      ASPIRE_DASHBOARD_UNSECURED_ALLOW_ANONYMOUS: "true"
+    ports:
+      - "127.0.0.1:${OBSERVABILITY_DASHBOARD_PORT:-18888}:18888"
+      - "127.0.0.1:${OTLP_GRPC_PORT:-4317}:18889"
+      - "127.0.0.1:${OTLP_HTTP_PORT:-4318}:18890"
+
 volumes:
   postgres_data:
   redis_data:

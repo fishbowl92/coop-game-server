@@ -21,6 +21,7 @@
   <ItemGroup>
     <ProjectReference Include="..\CoopGameServer.GrainContracts\CoopGameServer.GrainContracts.csproj" />
     <ProjectReference Include="..\CoopGameServer.Domain\CoopGameServer.Domain.csproj" />
+    <ProjectReference Include="..\CoopGameServer.Observability\CoopGameServer.Observability.csproj" />
     <ProjectReference Include="..\CoopGameServer.Persistence\CoopGameServer.Persistence.csproj" />
   </ItemGroup>
 

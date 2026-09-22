@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text.Json;
 using CoopGameServer.GrainContracts.Players;
+using CoopGameServer.Observability;
 using Microsoft.Extensions.Logging;
 using StackExchange.Redis;
 
@@ -62,6 +63,8 @@ public sealed class RedisPlayerProgressionCache : IPlayerProgressionCache
     public async Task<PlayerProgressionCacheReadResult> ReadFirstPageAsync(Guid playerId, int pageSize)
     {
         var startedAt = Stopwatch.GetTimestamp();
+        using var activity = StartCacheActivity("redis.progression.read", "read");
+        var activityResult = "error";
 
         try
         {
@@ -70,6 +73,7 @@ public sealed class RedisPlayerProgressionCache : IPlayerProgressionCache
 
             if (value.IsNullOrEmpty)
             {
+                activityResult = "miss";
                 PlayerProgressionCacheMetrics.RecordRequest("miss");
                 return new(PlayerProgressionCacheReadStatus.Miss, null);
             }
@@ -84,6 +88,7 @@ public sealed class RedisPlayerProgressionCache : IPlayerProgressionCache
             }
             catch (JsonException exception)
             {
+                activityResult = "corrupt";
                 InvalidJsonLog(_logger, playerId, exception);
                 await DeleteCorruptKeyAsync(playerId);
                 PlayerProgressionCacheMetrics.RecordRequest("corrupt");
@@ -99,16 +104,19 @@ public sealed class RedisPlayerProgressionCache : IPlayerProgressionCache
                 payload.Result.Nickname is null ||
                 payload.Result.Items is null)
             {
+                activityResult = "corrupt";
                 await DeleteCorruptKeyAsync(playerId);
                 PlayerProgressionCacheMetrics.RecordRequest("corrupt");
                 return new(PlayerProgressionCacheReadStatus.Corrupt, null);
             }
 
+            activityResult = "hit";
             PlayerProgressionCacheMetrics.RecordRequest("hit");
             return new(PlayerProgressionCacheReadStatus.Hit, payload.Result);
         }
         catch (Exception exception) when (IsRedisFailure(exception))
         {
+            CoopGameServerTelemetry.MarkError(activity, exception);
             ReadFailureLog(_logger, playerId, exception);
             PlayerProgressionCacheMetrics.RecordRequest("error");
             PlayerProgressionCacheMetrics.RecordRedisError("read");
@@ -116,6 +124,7 @@ public sealed class RedisPlayerProgressionCache : IPlayerProgressionCache
         }
         finally
         {
+            activity?.SetTag("coopgame.cache.result", activityResult);
             PlayerProgressionCacheMetrics.RecordRedisDuration(
                 "read",
                 Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds);
@@ -137,6 +146,8 @@ public sealed class RedisPlayerProgressionCache : IPlayerProgressionCache
         }
 
         var startedAt = Stopwatch.GetTimestamp();
+        using var activity = StartCacheActivity("redis.progression.write", "write");
+        var activityResult = "success";
 
         try
         {
@@ -158,11 +169,14 @@ public sealed class RedisPlayerProgressionCache : IPlayerProgressionCache
         }
         catch (Exception exception) when (IsRedisFailure(exception))
         {
+            activityResult = "error";
+            CoopGameServerTelemetry.MarkError(activity, exception);
             WriteFailureLog(_logger, playerId, exception);
             PlayerProgressionCacheMetrics.RecordRedisError("write");
         }
         finally
         {
+            activity?.SetTag("coopgame.cache.result", activityResult);
             PlayerProgressionCacheMetrics.RecordRedisDuration(
                 "write",
                 Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds);
@@ -172,6 +186,8 @@ public sealed class RedisPlayerProgressionCache : IPlayerProgressionCache
     public async Task InvalidateAsync(Guid playerId)
     {
         var startedAt = Stopwatch.GetTimestamp();
+        using var activity = StartCacheActivity("redis.progression.invalidate", "invalidate");
+        var activityResult = "success";
 
         try
         {
@@ -180,11 +196,14 @@ public sealed class RedisPlayerProgressionCache : IPlayerProgressionCache
         }
         catch (Exception exception) when (IsRedisFailure(exception))
         {
+            activityResult = "error";
+            CoopGameServerTelemetry.MarkError(activity, exception);
             InvalidationFailureLog(_logger, playerId, exception);
             PlayerProgressionCacheMetrics.RecordRedisError("invalidate");
         }
         finally
         {
+            activity?.SetTag("coopgame.cache.result", activityResult);
             PlayerProgressionCacheMetrics.RecordRedisDuration(
                 "invalidate",
                 Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds);
@@ -217,6 +236,15 @@ public sealed class RedisPlayerProgressionCache : IPlayerProgressionCache
 
     private static bool IsRedisFailure(Exception exception) =>
         exception is RedisException or TimeoutException;
+
+    /// <summary>Redis 키와 Player ID를 기록하지 않는 낮은 정보량의 캐시 구간을 시작합니다.</summary>
+    private static Activity? StartCacheActivity(string name, string operation)
+    {
+        var activity = CoopGameServerTelemetry.StartActivity(name);
+        activity?.SetTag("db.system.name", "redis");
+        activity?.SetTag("db.operation.name", operation);
+        return activity;
+    }
 
     private sealed record CachedPlayerProgressionPage(
         int SchemaVersion,

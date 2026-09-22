@@ -5,8 +5,8 @@
 .DESCRIPTION
     이 스크립트는 다음 반복 작업을 순서대로 수행합니다.
     1. Docker Desktop 엔진에 연결할 수 있는지 확인합니다.
-    2. compose.yaml의 PostgreSQL과 Redis를 백그라운드에서 시작합니다.
-    3. 두 서비스가 healthy(헬스체크 통과) 상태가 될 때까지 기다립니다.
+    2. compose.yaml의 PostgreSQL·Redis·관측성 대시보드를 백그라운드에서 시작합니다.
+    3. Healthcheck가 있는 서비스는 healthy, 없는 서비스는 running 상태가 될 때까지 기다립니다.
     4. 컨테이너 상태와 Git 작업 트리 상태를 출력합니다.
 
     Docker Desktop 자체를 자동으로 실행하지는 않습니다.
@@ -52,7 +52,7 @@ try {
         throw 'Docker Desktop이 실행 중이 아니거나 Engine running 상태가 아닙니다. Docker Desktop을 먼저 실행하세요.'
     }
 
-    Write-Host "[2/4] PostgreSQL과 Redis 컨테이너를 시작합니다..." -ForegroundColor Cyan
+    Write-Host "[2/4] PostgreSQL·Redis·관측성 대시보드 컨테이너를 시작합니다..." -ForegroundColor Cyan
     Invoke-ComposeCommand -Arguments @('up', '-d')
 
     # compose.yaml에 정의된 서비스 이름을 읽어 하드코딩을 줄입니다.
@@ -62,7 +62,7 @@ try {
         throw 'compose.yaml에서 서비스 목록을 읽지 못했습니다.'
     }
 
-    Write-Host "[3/4] 서비스가 healthy 상태가 될 때까지 기다립니다..." -ForegroundColor Cyan
+    Write-Host "[3/4] 서비스가 준비 상태가 될 때까지 기다립니다..." -ForegroundColor Cyan
     $deadline = (Get-Date).AddSeconds($HealthTimeoutSeconds)
 
     do {
@@ -84,7 +84,7 @@ try {
         }
 
         $allHealthy = ($serviceStates.Count -eq $services.Count) -and
-            ($serviceStates | ForEach-Object { $_ -match ': healthy$' } | Where-Object { -not $_ }).Count -eq 0
+            ($serviceStates | ForEach-Object { $_ -match ': (healthy|running)$' } | Where-Object { -not $_ }).Count -eq 0
 
         if (-not $allHealthy -and (Get-Date) -lt $deadline) {
             Start-Sleep -Seconds 2

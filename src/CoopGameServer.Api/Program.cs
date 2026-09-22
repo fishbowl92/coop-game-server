@@ -7,13 +7,27 @@ using CoopGameServer.Api.Application.Parties;
 using CoopGameServer.Api.Application.Rewards;
 using CoopGameServer.Api.Authentication;
 using CoopGameServer.Domain.Accounts;
+using CoopGameServer.Observability;
 using CoopGameServer.Persistence;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 
-var builder = WebApplication.CreateBuilder(args);
+var builder = WebApplication.CreateBuilder(new WebApplicationOptions
+{
+    Args = args,
+    // 저장소 루트에서 --project로 실행해도 출력 폴더의 appsettings 파일을 동일하게 읽습니다.
+    ContentRootPath = AppContext.BaseDirectory,
+});
+
+builder.Logging.AddCoopGameServerOpenTelemetryLogging(
+    builder.Configuration,
+    "CoopGameServer.Api");
+builder.Services.AddCoopGameServerObservability(
+    builder.Configuration,
+    "CoopGameServer.Api",
+    includeAspNetCore: true);
 
 // User Secrets(유저 시크릿, 개발 PC에만 비밀 설정을 저장하는 기능)에서
 // PostgreSQL 연결 문자열을 읽습니다. 비밀번호가 코드나 Git에 들어가지 않게 하고,
@@ -24,8 +38,10 @@ var gameDbConnectionString = builder.Configuration.GetConnectionString("GameDb")
 
 // Factory는 호출마다 독립적인 GameDbContext를 만들 수 있어 HTTP 서비스와 Silo용 Writer가 함께 사용합니다.
 // 기존 HTTP 서비스가 요청 범위 GameDbContext를 계속 주입받을 수 있도록 Scoped 등록도 연결합니다.
+var gameDbDataSource = GameDbDataSourceFactory.Create(gameDbConnectionString);
+builder.Services.AddSingleton(gameDbDataSource);
 builder.Services.AddPooledDbContextFactory<GameDbContext>(options =>
-    options.UseNpgsql(gameDbConnectionString));
+    options.UseNpgsql(gameDbDataSource));
 builder.Services.AddScoped(serviceProvider =>
     serviceProvider.GetRequiredService<IDbContextFactory<GameDbContext>>().CreateDbContext());
 
@@ -91,6 +107,8 @@ builder.Services.AddScoped<GameRoomService>();
 builder.Host.UseOrleansClient(clientBuilder =>
 {
     clientBuilder.UseLocalhostClustering();
+    // W3C Trace Context를 Orleans 메시지에 실어 API의 HTTP Trace와 Silo Grain 실행을 연결합니다.
+    clientBuilder.AddActivityPropagation();
 });
 
 builder.Services.AddControllers();

@@ -1,11 +1,12 @@
 using System.Diagnostics.Metrics;
+using CoopGameServer.Observability;
 
 namespace CoopGameServer.Grains.Players.Caching;
 
 /// <summary>플레이어 ID 없이 낮은 Cardinality(카디널리티, 태그 값 종류 수) 지표를 기록합니다.</summary>
 internal static class PlayerProgressionCacheMetrics
 {
-    internal const string MeterName = "CoopGameServer.PlayerProgressionCache";
+    internal const string MeterName = CoopGameServerTelemetry.PlayerProgressionCacheMeterName;
 
     private static readonly Meter Meter = new(MeterName);
     private static readonly Counter<long> Requests = Meter.CreateCounter<long>(

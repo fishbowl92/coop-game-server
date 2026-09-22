@@ -1,8 +1,10 @@
+using System.Diagnostics;
 using CoopGameServer.Domain.Accounts;
 using CoopGameServer.Domain.Administration;
 using CoopGameServer.Domain.Inventories;
 using CoopGameServer.Domain.Rewards;
 using CoopGameServer.Domain.Wallets;
+using CoopGameServer.Observability;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
 
@@ -44,6 +46,39 @@ public sealed class PostgreSqlRewardWriter : IRewardWriter
     {
         ArgumentNullException.ThrowIfNull(command);
 
+        var operation = command.AdministratorAccountId.HasValue ? "administrator" : "game_completion";
+        var resultName = "exception";
+        var startedAt = Stopwatch.GetTimestamp();
+        using var activity = CoopGameServerTelemetry.StartActivity("postgresql.reward.write");
+        activity?.SetTag("db.system.name", "postgresql");
+        activity?.SetTag("coopgame.reward.operation", operation);
+        activity?.SetTag("coopgame.request.id", command.RequestId.ToString());
+        activity?.SetTag("coopgame.player.id", command.PlayerId.ToString());
+
+        try
+        {
+            var result = await WriteCoreAsync(command);
+            resultName = GetTelemetryResult(result);
+            return result;
+        }
+        catch (Exception exception)
+        {
+            CoopGameServerTelemetry.MarkError(activity, exception);
+            throw;
+        }
+        finally
+        {
+            activity?.SetTag("coopgame.reward.result", resultName);
+            CoopGameServerTelemetry.RecordRewardPersistence(
+                operation,
+                resultName,
+                Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds);
+        }
+    }
+
+    /// <summary>관측 래퍼 안에서 기존 PostgreSQL 트랜잭션과 멱등성 처리를 수행합니다.</summary>
+    private async Task<RewardWriteResult> WriteCoreAsync(RewardWriteCommand command)
+    {
         // 하나의 now를 보상·관리자 감사와 상태 변경에 공유해 같은 Transaction의 시각 기준을 통일합니다.
         var now = _timeProvider.GetUtcNow();
         var requestedRewardAudit = new RewardAudit(
@@ -304,5 +339,22 @@ public sealed class PostgreSqlRewardWriter : IRewardWriter
     private static RewardWriteResult ToErrorResult(RewardWriteError error)
     {
         return RewardWriteResult.Failed(error);
+    }
+
+    /// <summary>고정된 소수 값만 지표 태그로 사용하도록 저장 결과를 정규화합니다.</summary>
+    private static string GetTelemetryResult(RewardWriteResult result)
+    {
+        if (result.Error == RewardWriteError.None)
+        {
+            return result.IsReplay ? "replayed" : "applied";
+        }
+
+        return result.Error switch
+        {
+            RewardWriteError.PlayerNotFound => "player_not_found",
+            RewardWriteError.IdempotencyConflict => "idempotency_conflict",
+            RewardWriteError.InvalidAdministrator => "invalid_administrator",
+            _ => "unknown_error",
+        };
     }
 }

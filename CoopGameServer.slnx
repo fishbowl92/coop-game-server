@@ -6,6 +6,7 @@
     <Project Path="src/CoopGameServer.Domain/CoopGameServer.Domain.csproj" />
     <Project Path="src/CoopGameServer.GrainContracts/CoopGameServer.GrainContracts.csproj" />
     <Project Path="src/CoopGameServer.Grains/CoopGameServer.Grains.csproj" />
+    <Project Path="src/CoopGameServer.Observability/CoopGameServer.Observability.csproj" />
     <Project Path="src/CoopGameServer.Persistence/CoopGameServer.Persistence.csproj" />
     <Project Path="src/CoopGameServer.Silo/CoopGameServer.Silo.csproj" />
   </Folder>

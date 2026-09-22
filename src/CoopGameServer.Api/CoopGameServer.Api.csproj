@@ -30,6 +30,7 @@
     <!-- 게임 규칙과 PostgreSQL 저장 구현을 HTTP 실행 프로젝트에서 사용합니다. -->
     <ProjectReference Include="..\CoopGameServer.Domain\CoopGameServer.Domain.csproj" />
     <ProjectReference Include="..\CoopGameServer.GrainContracts\CoopGameServer.GrainContracts.csproj" />
+    <ProjectReference Include="..\CoopGameServer.Observability\CoopGameServer.Observability.csproj" />
     <ProjectReference Include="..\CoopGameServer.Persistence\CoopGameServer.Persistence.csproj" />
   </ItemGroup>
 

@@ -18,11 +18,15 @@
   <ItemGroup>
     <ProjectReference Include="..\CoopGameServer.Grains\CoopGameServer.Grains.csproj" />
     <ProjectReference Include="..\CoopGameServer.GrainContracts\CoopGameServer.GrainContracts.csproj" />
+    <ProjectReference Include="..\CoopGameServer.Observability\CoopGameServer.Observability.csproj" />
     <ProjectReference Include="..\CoopGameServer.Persistence\CoopGameServer.Persistence.csproj" />
   </ItemGroup>
 
   <ItemGroup>
     <None Update="appsettings.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Update="appsettings.Development.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
   </ItemGroup>

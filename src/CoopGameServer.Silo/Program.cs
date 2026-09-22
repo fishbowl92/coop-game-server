@@ -1,5 +1,6 @@
 using CoopGameServer.Grains.GameRooms;
 using CoopGameServer.Grains.Players.Caching;
+using CoopGameServer.Observability;
 using CoopGameServer.Persistence;
 using CoopGameServer.Persistence.Rewards;
 using CoopGameServer.Silo.Recovery;
@@ -13,16 +14,31 @@ using StackExchange.Redis;
 // 이 프로젝트는 HTTP 요청을 직접 받지 않습니다. HTTP 요청은 Api 프로젝트가 받고,
 // Api가 Grain 메서드를 호출하면 Silo가 해당 Grain을 활성화하여 실행합니다.
 var host = Host.CreateDefaultBuilder(args)
+    // 저장소 루트에서 --project로 실행해도 출력 폴더의 appsettings 파일을 동일하게 읽습니다.
+    .UseContentRoot(AppContext.BaseDirectory)
+    .ConfigureLogging((hostContext, logging) =>
+    {
+        logging.AddCoopGameServerOpenTelemetryLogging(
+            hostContext.Configuration,
+            "CoopGameServer.Silo");
+    })
     .ConfigureServices((hostContext, services) =>
     {
+        services.AddCoopGameServerObservability(
+            hostContext.Configuration,
+            "CoopGameServer.Silo",
+            includeAspNetCore: false);
+
         // Api 프로젝트와 같은 User Secrets 저장소에서 GameDb 연결 문자열을 읽습니다.
         // Grain은 명령마다 짧게 DbContext를 빌려 쓰므로 Factory 형태로 등록합니다.
         var gameDbConnectionString = hostContext.Configuration.GetConnectionString("GameDb")
             ?? throw new InvalidOperationException(
                 "ConnectionStrings:GameDb 설정이 없습니다. User Secrets에 PostgreSQL 연결 문자열을 설정하세요.");
 
+        var gameDbDataSource = GameDbDataSourceFactory.Create(gameDbConnectionString);
+        services.AddSingleton(gameDbDataSource);
         services.AddPooledDbContextFactory<GameDbContext>(options =>
-            options.UseNpgsql(gameDbConnectionString));
+            options.UseNpgsql(gameDbDataSource));
 
         // PlayerGrain이 사용할 보상 Writer는 호출마다 Factory에서 새 DbContext를 빌립니다.
         services.AddSingleton(TimeProvider.System);
@@ -70,6 +86,8 @@ var host = Host.CreateDefaultBuilder(args)
         // Orleans의 Silo 간 통신 포트(기본 11111)와 API Client 접속 게이트웨이 포트
         // (기본 30000)를 localhost에 준비합니다. 운영 환경의 클러스터 구성은 아직 범위 밖입니다.
         siloBuilder.UseLocalhostClustering();
+        // API에서 시작된 Trace Context를 Grain 실행과 하위 PostgreSQL·Redis Activity로 전달합니다.
+        siloBuilder.AddActivityPropagation();
     })
     .ConfigureServices(services =>
     {
