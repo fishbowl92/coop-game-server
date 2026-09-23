@@ -1,6 +1,6 @@
 # Agent execution playbook
 
-Version: 2026-09-14.v1. Entry point: [AGENTS.md](../../AGENTS.md).
+Version: 2026-09-23.v2. Entry point: [AGENTS.md](../../AGENTS.md).
 Human explanation: [Korean companion](agent-workflow.ko.md).
 
 Read for nontrivial changes. Small prose fixes use the entry point and documentation
@@ -17,7 +17,14 @@ validation row. This workflow does not override active user instructions or tool
 4. Read the relevant accepted design. Fetch remote state only when needed. Claims
    of published completion require the remote commit and CI at that commit. A recent
    Notion page edit does not prove its embedded implementation claims are current.
-5. Stop discovery once the affected path, invariants, acceptance checks, and unresolved
+5. At a week boundary, compare the Notion dashboard, roadmap, and next-week note's
+   dated status, prerequisites, project inventory, and unchecked artifacts with
+   local HEAD, remote main, matching CI, code, tests, and current.md. If they
+   disagree, record a concise mismatch list and choose the current code-backed
+   baseline before implementation. Preserve historical evidence as dated history.
+   If Notion synchronization is deferred, record the gap in the handoff rather than
+   silently treating a stale page as current or broadening the publication scope.
+6. Stop discovery once the affected path, invariants, acceptance checks, and unresolved
    decisions are known. Expand only to resolve a concrete gap.
 
 Use `rg --files <directory>` for paths and `rg -n <symbol> <directory>` for references.
@@ -53,6 +60,15 @@ TTL, timeout, corrupt payload, fallback, invalidation failure, and stale-read bo
 A post-commit delete alone cannot prevent a late stale cache fill. Promise immediate
 freshness only when the chosen coordination/version policy and tests establish it.
 
+For load testing, define the HTTP boundary and accepted scenarios before writing a
+runner. Record target commit, machine/container limits, service count, dataset and
+reset/replenishment, cache state, warm-up, open/closed arrival model, offered load,
+timeout, duration, and success/replay/business rejection/transport error classes.
+State acceptance thresholds before seeing baseline results. Finite GameRooms need
+enough valid rooms and connection credentials for the full measurement; a stream
+of rejected commands is not combat throughput. Plan post-load PostgreSQL and cache
+invariant checks before generating data.
+
 ## P3. Implement one complete slice
 
 - Reuse existing projects and layers. Add abstractions to isolate a real dependency
@@ -80,12 +96,22 @@ freshness only when the chosen coordination/version policy and tests establish i
 | Grain/recovery | Orchestration tests plus changed restart/reactivation, partial failure, replay boundaries |
 | Startup/dependencies/configuration | Solution build and affected startup/integration checks; no secret output |
 | Completed code feature | Solution Release build and full unit/integration regression run; explicitly report unexecuted requirements |
+| Load-test claim | External HTTP traffic with valid business operations; raw run data and environment/commit manifest; repeated baseline and comparison; post-load durable invariants |
 
 Establish an appropriate baseline before editing code. An unchanged checkout with
 relevant recent evidence need not repeat every expensive test before the first edit.
 Run focused checks while iterating, then the required full regression run. Repeat
 passing checks only for new changes, failures, or unresolved concerns. A prose-only
 commit can reuse unchanged application evidence if the reuse is stated accurately.
+
+For performance work, separate load generation from normal unit/integration tests
+and keep it out of routine CI unless the environment provides controlled capacity.
+Repeat comparisons under the same conditions and report unsuccessful runs. Use
+traces, metrics, SQL, or profiling to justify a single change. If no bottleneck is
+confirmed, keep the baseline and limits without manufacturing an optimization.
+Before adding a repository-wide style or vulnerability gate, measure its current
+baseline and resolve or explicitly scope pre-existing failures; a changed-file pass
+does not prove the full gate passed.
 
 Run commands separately from the verified root and check each exit status:
 

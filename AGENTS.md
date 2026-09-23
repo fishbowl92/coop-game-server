@@ -1,6 +1,6 @@
 # CoopGameServer: agent operating contract
 
-Version: 2026-09-14.v1. Scope: this repository. Audience: coding agents.
+Version: 2026-09-23.v2. Scope: this repository. Audience: coding agents.
 
 Optimize for completed, verifiable changes with minimal repeated discovery. Keep
 stable rules here and volatile task status in `docs/work/current.md`. System,
@@ -38,6 +38,10 @@ repository instructions for edited files. Links are read on demand, not automati
   queries. Reuse retained results instead of refetching unchanged content.
 - Code describes current behavior, accepted design describes intent, tests establish
   verification scope. Historical notes aid discovery. Resolve contradictions explicitly.
+- Before starting a new week or trusting a Notion status page, compare its dated
+  claims and completion checklist with local HEAD, remote main, CI for that commit,
+  current code/tests, and docs/work/current.md. Record stale claims and missing
+  deliverables; an old page must not become the implementation baseline.
 
 ## 3. Brief and execute
 
@@ -68,6 +72,10 @@ repository instructions for edited files. Links are read on demand, not automati
 - Client cancellation does not undo an accepted durable operation. Read
   `docs/architecture/request-cancellation-and-retry.md` when changing that boundary.
 - Cache design must specify fallback, invalidation, timeout, and freshness behavior.
+- For load work, fix the scenario, valid business responses, data lifecycle, offered
+  load, environment, and acceptance thresholds before the baseline. Recheck durable
+  invariants after load. Optimize only a measured bottleneck; an unchanged result
+  is preferable to an unjustified code change.
 
 ## 5. Edit and verify
 
@@ -92,6 +100,9 @@ repository instructions for edited files. Links are read on demand, not automati
   subjects. Respect existing authorization for commits, pushes, and publication.
 - Separate implementation, tests, commit, push, remote CI, and documentation status.
   Bind evidence to date, command/configuration, source state, and scope; label prior runs.
+- Check every promised weekly artifact, including reports and raw measurements,
+  before calling a week complete. Name deferred or missing artifacts separately
+  even when code and CI pass.
 - For code changes, record files and added/changed/removed functions, meaningful
   parameters/state, and reasons. Link details from a concise final report.
 - Update `docs/work/current.md` at meaningful handoffs: current snapshot, outstanding
