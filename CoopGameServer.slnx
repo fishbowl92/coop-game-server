@@ -12,6 +12,7 @@
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/CoopGameServer.IntegrationTests/CoopGameServer.IntegrationTests.csproj" />
+    <Project Path="tests/CoopGameServer.LoadTests/CoopGameServer.LoadTests.csproj" />
     <Project Path="tests/CoopGameServer.UnitTests/CoopGameServer.UnitTests.csproj" />
   </Folder>
 </Solution>

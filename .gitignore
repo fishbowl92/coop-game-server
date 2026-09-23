@@ -482,3 +482,6 @@ $RECYCLE.BIN/
 *.swp
 
 .env
+
+# Week 8 local load reports and process logs
+/artifacts/week08/

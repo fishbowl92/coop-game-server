@@ -1,0 +1,28 @@
+# 8주차 전용 인프라입니다. tmpfs 데이터는 컨테이너 종료 시 사라져 개발 DB를 건드리지 않습니다.
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: coop_load
+      POSTGRES_PASSWORD: ${LOAD_DB_PASSWORD:?Set an ephemeral password}
+      POSTGRES_DB: coop_load
+    ports:
+      - "127.0.0.1:${LOAD_DB_PORT:-25432}:5432"
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U coop_load -d coop_load"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "127.0.0.1:${LOAD_REDIS_PORT:-26379}:6379"
+    tmpfs:
+      - /data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
