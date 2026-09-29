@@ -4,8 +4,8 @@ Updated: 2026-09-29 (Asia/Seoul). Snapshot, not live status. Follow [AGENTS.md](
 
 ## Active work
 
-- Week 9 implementation is complete locally. The execution contract is [Week 9 release package](../design/week-09-release-package.md).
-- Runtime commit `50ab5da` contains the container, health, migration, CI, and test changes. Documentation commit `c144608` contains the README, diagrams, incident report, demo, and interview material.
+- Week 9 implementation is complete and published. The execution contract is [Week 9 release package](../design/week-09-release-package.md).
+- Runtime commit `50ab5da` contains the container, health, migration, CI, and test changes. Documentation commit `c144608` contains the README, diagrams, incident report, demo, and interview material. Verification handoff commit `ec50b81` records the clean-snapshot result.
 - API, Silo, Admin, and the one-shot Migrator have multi-stage .NET 10 Alpine Dockerfiles. Final containers use the image-provided non-root user; Npgsql images include the optional GSSAPI runtime library so startup logs stay clean.
 - Compose profile `app` provides PostgreSQL, Migrator, Redis, Silo, API, Admin, and Aspire Dashboard with dependency ordering and loopback-only host ports. API/Silo/Admin expose separate liveness and readiness endpoints.
 - CI now restores, checks style and analyzers, audits direct/transitive NuGet packages, builds/tests Release, and builds all four application images.
@@ -22,6 +22,8 @@ Updated: 2026-09-29 (Asia/Seoul). Snapshot, not live status. Follow [AGENTS.md](
 - `Invoke-PortfolioDemo.ps1` completed four account registrations, a four-player party match, four connections, combat start, first attack, administrator reward, player lookup, and reward-history verification without printing tokens.
 - A Git archive of `c144608` started the complete stack from committed files only in 85.2 seconds on the local warm-image environment. The same seven-stage demo passed against that clean snapshot. Temporary containers and source files were removed; test volumes were preserved.
 - `docker compose config -q`, tracked document target checks, and `git diff --check` passed. The pre-existing untracked `CoopGameServer/` review-data directory remains untouched.
+- Public GitHub Actions run `36550736611` passed at exact implementation commit `ec50b81`: Restore, Style, Analyzer, NuGet vulnerability inspection, Release build, full tests, and four application image builds.
+- The existing Notion Week 9 learning page and 0-9 week roadmap were synchronized to the published implementation evidence on 2026-09-29 and fetched again after editing.
 
 ## Boundaries and next action
 
@@ -29,5 +31,5 @@ Updated: 2026-09-29 (Asia/Seoul). Snapshot, not live status. Follow [AGENTS.md](
 - Redis outage evidence covers readiness and the existing progression fallback test, not sustained latency or an external alert route.
 - Week 8's cache hit ratio and first-combat latency cause remain unisolated. Week 8 load is not a production capacity claim.
 - A 3-5 minute recording is still a manual artifact. The tracked script and shot plan are ready, but Week 9 must not claim that the video exists until a file or public URL is reviewed.
-- The Notion roadmap and Week 9 page were stale at implementation start and still require exact-commit synchronization after publication.
-- Next: publish the three purpose-based commits, verify GitHub Actions at the public commit, then update the existing Notion Week 9 and roadmap pages.
+- The Notion pages intentionally retain dated `f186650` sections as implementation-before history; their top status, current evidence, completion checklist, and next action use the 2026-09-29 implementation result.
+- Next: record and review the 3-5 minute demo, verify the recording contains no token, password, connection string, or personal data, then link the file or public URL from README and Notion.
