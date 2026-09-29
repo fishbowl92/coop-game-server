@@ -109,6 +109,45 @@ dotnet tool install --global dotnet-ef
 
 모든 명령은 `CoopGameServer.slnx`가 있는 저장소 최상위 폴더에서 실행합니다.
 
+1. 공유 가능한 예시를 내 PC 전용 `.env`로 복사합니다.
+
+   ```powershell
+   Copy-Item .env.example .env
+   ```
+
+2. `.env`에서 `POSTGRES_PASSWORD`, `JWT_SIGNING_KEY`, `ADMIN_PASSWORD`를 각각 긴 임의 값으로 바꿉니다. `JWT_SIGNING_KEY`는 최소 32바이트여야 합니다. `.env`는 Git에서 제외됩니다.
+3. 마이그레이션, Silo, API, 관리자 UI와 의존 서비스를 한 명령으로 빌드·시작합니다.
+
+   ```powershell
+   docker compose --profile app up -d --build
+   ```
+
+   시작 순서는 PostgreSQL 준비 → Migrator 종료 코드 0 → Silo 준비 → API 준비 → Admin 준비입니다. Migrator만 정상 종료되고 나머지 서비스는 실행 상태를 유지합니다.
+
+4. 상태를 확인합니다.
+
+   ```powershell
+   Invoke-RestMethod http://localhost:5266/health/ready
+   Invoke-RestMethod http://localhost:5265/health/ready
+   Invoke-RestMethod http://localhost:5275/health/ready
+   ```
+
+   세 응답이 모두 `Healthy`이면 API는 `http://localhost:5265`, 관리자 UI는 `http://localhost:5275`, Aspire Dashboard는 `http://localhost:18888`에서 사용할 수 있습니다.
+
+5. `.env`에 적은 관리자 계정으로 전체 공개 경로를 재현합니다.
+
+   ```powershell
+   .\tools\Invoke-PortfolioDemo.ps1 `
+       -AdministratorLoginId portfolio_admin `
+       -AdministratorPassword '<.env의 ADMIN_PASSWORD>'
+   ```
+
+   이 스크립트는 가입 → 4인 파티 → 매칭 → 방 연결 → 전투 시작·첫 공격 → 관리자 보상 → 감사 조회를 실행합니다. JWT와 비밀번호는 출력하지 않습니다.
+
+## 개발 모드 수동 실행
+
+아래 절차는 API와 Silo를 IDE 또는 `dotnet run`으로 따로 디버깅할 때 사용합니다. 전체 스택 검토에는 위 Compose 경로를 사용합니다.
+
 ### 1. 로컬 환경 변수 준비
 
 `.env.example`을 복사해 `.env`를 만들고 `POSTGRES_PASSWORD`를 본인만 아는 긴 로컬 비밀번호로 바꿉니다.
@@ -226,14 +265,17 @@ $headers = @{ Authorization = "Bearer $($authentication.accessToken)" }
 Invoke-RestMethod -Uri "http://localhost:5265/api/players/$($authentication.playerId)" -Headers $headers
 ```
 
-`$authentication.accessToken`은 비밀값처럼 취급하며 Git·문서·화면 공유에 남기지 않습니다. 운영자 계정 생성 절차는 아직 구현하지 않았으므로 보상·진단 API는 일반 가입 계정으로 호출할 수 없습니다.
+`$authentication.accessToken`은 비밀값처럼 취급하며 Git·문서·화면 공유에 남기지 않습니다. 로컬 관리자는 User Secrets 또는 전체 스택의 `ADMIN_*` 환경 변수가 세 값을 모두 제공할 때만 최초 한 번 생성됩니다. 기존 일반 계정을 자동 승격하거나 기본 비밀번호를 만들지 않습니다.
 
 ## 일상 검증 명령
 
 ```powershell
 dotnet build CoopGameServer.slnx --configuration Release
 dotnet test CoopGameServer.slnx --configuration Release --no-build
+dotnet format style CoopGameServer.slnx --verify-no-changes --no-restore --exclude src/CoopGameServer.Persistence/Migrations
+dotnet format analyzers CoopGameServer.slnx --verify-no-changes --no-restore
 dotnet list CoopGameServer.slnx package --vulnerable --include-transitive
+docker compose config -q
 git status
 ```
 
@@ -245,7 +287,7 @@ git status
 API와 Silo를 `Ctrl+C`로 종료한 뒤 필요하면 컨테이너를 내립니다.
 
 ```powershell
-docker compose down
+docker compose --profile app down
 ```
 
 데이터 볼륨은 유지됩니다. `docker compose down -v`는 로컬 PostgreSQL·Redis 데이터를 함께 삭제하므로 데이터 초기화가 명확히 필요할 때만 사용합니다.
@@ -257,15 +299,20 @@ docker compose down
 - [상태 변경 요청의 멱등성 키 원칙](./docs/adr/0003-use-idempotency-keys-for-state-changing-requests.md)
 - [Player 영속성에 EF Core를 선택한 이유](./docs/adr/0004-use-ef-core-for-player-persistence.md)
 - [요청 취소·재시도 원칙](./docs/architecture/request-cancellation-and-retry.md)
+- [현재 시스템 구조·ERD·대표 시퀀스](./docs/architecture/system-overview.md)
+- [9주차 실행 패키지 설계](./docs/design/week-09-release-package.md)
 - [5주차 Redis 진행도 Cache-Aside](./docs/design/week-05-redis-progression-cache.md)
+- [Redis 장애 보고서](./docs/incidents/week-07-redis-outage.md)
+- [데모·면접 설명 스크립트](./docs/portfolio/demo-and-interview-script.md)
 - [로컬 실행·문제 해결 절차](./docs/runbooks/local-development.md)
 
 ## 현재 한계와 다음 목표
 
 - PingGrain은 연결 진단용이고, 실제 게임 상태는 PartyGrain·MatchQueueGrain·GameRoomGrain이 관리합니다.
-- JWT 접근 토큰은 구현했지만 갱신 토큰, 로그아웃·폐기 목록, 관리자 계정 초기화 절차는 아직 없습니다.
+- JWT 접근 토큰과 명시적 로컬 관리자 부트스트랩은 구현했지만 갱신 토큰, 로그아웃·폐기 목록, 운영 관리자 프로비저닝은 아직 없습니다.
 - Redis 적용 범위는 Player 진행도 첫 페이지입니다. 세션·분산 Rate Limit·멱등성 빠른 조회는 아직 적용하지 않았습니다.
 - 현재 공개 Queue는 `coop-dungeon-normal-v1` 하나입니다. 여러 Queue를 추가하기 전에는 Player 전역 매칭 예약이 필요합니다.
 - GameRoom은 공격·스킬·3개 웨이브·연결·재접속·만료 복구를 구현했지만 실시간 소켓 전송과 복잡한 전투 규칙은 아직 없습니다.
 - 현재 복구 Worker는 단일 Silo 학습 범위입니다. 다중 Silo에서 중복 조회를 조정하는 Lease(임대 잠금)는 운영 확장 항목입니다.
+- Compose 패키지는 한 PC의 단일 Silo 포트폴리오 재현용입니다. 외부 TLS 종료, 비밀 관리자, 다중 노드 멤버십, 배포 오케스트레이터는 운영 범위로 확장하지 않았습니다.
 - 다음 캐시 단계는 측정 결과에 따른 timeout·TTL 조정과 운영 지표 Exporter 연결입니다.

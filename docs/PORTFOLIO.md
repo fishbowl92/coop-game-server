@@ -41,6 +41,16 @@ Grain(그레인)은 식별자를 기준으로 게임 상태와 명령을 맡는 
 
 현재는 단일 Silo(사일로, Orleans 서버 실행 프로세스)의 학습 범위입니다. 다중 서버 운영 안정성이나 장애 상황 전체를 입증한 것으로 표시하지 않습니다.
 
+## 4. 재현 가능한 실행 패키지
+
+- [9주차 실행 패키지 설계](./design/week-09-release-package.md): 마이그레이션 소유자, 시작 순서, 상태 확인, 비밀과 실패 경계.
+- [현재 시스템 구조·ERD·시퀀스](./architecture/system-overview.md): API, Silo, PostgreSQL, Redis, Admin의 책임과 대표 요청 흐름.
+- [`Invoke-PortfolioDemo.ps1`](../tools/Invoke-PortfolioDemo.ps1): 가입부터 4인 파티·매칭·전투·관리자 보상·감사 조회까지 공개 HTTP 경로 재현.
+- [Redis 장애 연습](./incidents/week-07-redis-outage.md): Redis 중단 중 PostgreSQL 폴백과 준비 상태 계약의 검증 범위.
+- [데모·면접 설명 스크립트](./portfolio/demo-and-interview-script.md): 3-5분 화면 구성과 3분·10분 설명 구조.
+
+Compose 패키지는 한 PC의 단일 Silo 환경을 재현합니다. 컨테이너 이미지가 만들어지고 상태 확인과 대표 흐름이 통과했다는 증거이며, 다중 노드 배포나 운영 수용량을 증명하지 않습니다.
+
 ## AI 활용과 학습 자료를 읽는 방법
 
 - 주차별 설계 문서와 구현 코드를 구분합니다. [4주차 설계 개요](./design/week-04-game-room-reconnect-overview.md)에 문서가 있다는 이유만으로 전투·재접속 구현이 끝난 것은 아닙니다.
@@ -49,6 +59,6 @@ Grain(그레인)은 식별자를 기준으로 게임 상태와 명령을 맡는 
 
 ## 현재 범위와 확인 한계
 
-인증, 보상, 파티, 4인 매칭, 공격·스킬·3개 웨이브, 연결·재접속·복구와 Player 진행도 Redis Cache-Aside를 구현한 학습 서버입니다. 실시간 소켓 전송, Redis의 세션·분산 제한 적용과 운영 배포는 아직 구현하지 않았습니다.
+인증, 보상, 파티, 4인 매칭, 공격·스킬·3개 웨이브, 연결·재접속·복구, Player 진행도 Redis Cache-Aside와 단일 머신 Compose 실행 패키지를 구현한 학습 서버입니다. 실시간 소켓 전송, Redis의 세션·분산 제한 적용, 다중 Silo와 운영 배포는 아직 구현하지 않았습니다.
 
 이번 포트폴리오 편집에서는 코드와 테스트 정의를 대조했습니다. 서버 테스트 전체를 새로 실행했다거나 최신 실행 결과를 보증하는 문서가 아닙니다. 실행 방법은 [저장소의 처음 실행 안내](../README.md#처음-실행), 자동 실행 결과는 [GitHub Actions 검사 기록](https://github.com/fishbowl92/coop-game-server/actions)에서 확인할 수 있습니다.

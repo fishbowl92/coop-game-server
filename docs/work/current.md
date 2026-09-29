@@ -1,25 +1,31 @@
 # Current work handoff
 
-Updated: 2026-09-23 (Asia/Seoul). Snapshot, not live status. Follow [AGENTS.md](../../AGENTS.md); recheck volatile facts.
+Updated: 2026-09-29 (Asia/Seoul). Snapshot, not live status. Follow [AGENTS.md](../../AGENTS.md); recheck volatile facts.
 
 ## Active work
 
-- Week 8 load test implementation and local baseline are complete. The experiment contract is [Week 8 design](../design/week-08-load-testing.md); the nine-run evidence and raw samples are [Week 8 performance](../performance/week-08/README.md).
-- Local guideline commit `d0e3a4e` records weekly freshness, stale Notion status, missing artifacts, and valid load-test requirements in AGENTS.md and both engineering playbooks. Two Notion guideline pages were updated and refetched.
-- Implementation commit `fe61f83` adds the separate NBomber load runner, isolated Compose, repeat script, and solution entry. The game server production behavior was not modified. Measurement found no demonstrated persistent bottleneck, so there is no After optimization commit.
-- The initial GitHub `main` push was rejected by automatic approval review. The user then explicitly approved publication. `origin/main` reached `76939f7`, and push CI run `35850550530` passed restore, build, and tests at that exact commit. Verify the final remote commit when finishing this status update.
+- Week 9 implementation is complete locally. The execution contract is [Week 9 release package](../design/week-09-release-package.md).
+- API, Silo, Admin, and the one-shot Migrator have multi-stage .NET 10 Alpine Dockerfiles. Final containers use the image-provided non-root user; Npgsql images include the optional GSSAPI runtime library so startup logs stay clean.
+- Compose profile `app` provides PostgreSQL, Migrator, Redis, Silo, API, Admin, and Aspire Dashboard with dependency ordering and loopback-only host ports. API/Silo/Admin expose separate liveness and readiness endpoints.
+- CI now restores, checks style and analyzers, audits direct/transitive NuGet packages, builds/tests Release, and builds all four application images.
+- The representative HTTP demo, system/ERD/sequence document, Redis outage report, and interview script are tracked. Default WeatherForecast files and the obsolete `.http` sample were removed.
 
 ## Local verification
 
-- Release solution build: 0 warnings and 0 errors.
-- Complete regression after Week 8 implementation: 141 unit + 139 integration tests passed, 0 failed/skipped.
-- On `fe61f83`, nine isolated runs yielded 768/768 valid HTTP responses with zero unexpected errors: progression at 20/s for 10s, combat at 2/s and 5/s for 8s, three runs per condition. Post-run read-only persistence checks passed in all runs.
-- Generated NBomber reports and logs stay in ignored `artifacts/week08/`; the safe raw samples and summaries are in the performance document directory.
-- The dedicated containers and child server processes were stopped after each run. The pre-existing untracked `CoopGameServer/` review-data directory remains untouched.
+- Release solution build: 13 projects, 0 warnings, 0 errors.
+- Complete regression: 141 unit + 140 integration tests passed, 0 failed/skipped. The new HTTP test proves anonymous liveness plus PostgreSQL-and-Orleans readiness through the real ASP.NET Core pipeline.
+- NuGet vulnerability inspection: no known direct or transitive vulnerable package reported in 13 projects.
+- Four application images built successfully. Migrator applied the two pending local migrations on the first start, then reported zero pending migrations on the second start.
+- API, Silo, and Admin readiness returned `Healthy`; API liveness returned `Healthy`. Silo, API, Admin, and Migrator ran as container user `1654`; Migrator exited 0.
+- During a controlled Redis stop, API and Silo readiness remained `Healthy`; Redis returned to `healthy` after restart.
+- `Invoke-PortfolioDemo.ps1` completed four account registrations, a four-player party match, four connections, combat start, first attack, administrator reward, player lookup, and reward-history verification without printing tokens.
+- `docker compose config -q`, tracked document target checks, and `git diff --check` passed. The pre-existing untracked `CoopGameServer/` review-data directory remains untouched.
 
 ## Boundaries and next action
 
-- Week 8 combat load covers valid partial combat, not room completion or exactly-once reward delivery under load. The existing integration suite covers those guarantees at its own scope.
-- Warm progression reads are prepared, but Redis hit ratio was not independently measured. First combat attacks consistently had higher latency; the cause was not isolated with traces. Single-machine tmpfs measurements do not establish production SLO or capacity.
-- Week 7's promised Redis incident report is still absent. Historical Notion dashboard, roadmap, and Week 8 learning note remain stale; the user previously deferred broad learning-center updates until remaining weeks complete. The 2026-09-23 guideline update is the user-authorized exception.
-- Next: verify CI at the final documentation status commit, then begin Week 9 only when requested.
+- The Compose package is a single-machine, single-Silo portfolio environment. It does not prove production TLS, secret management, multi-node membership, rolling migration, backup, or capacity.
+- Redis outage evidence covers readiness and the existing progression fallback test, not sustained latency or an external alert route.
+- Week 8's cache hit ratio and first-combat latency cause remain unisolated. Week 8 load is not a production capacity claim.
+- A 3-5 minute recording is still a manual artifact. The tracked script and shot plan are ready, but Week 9 must not claim that the video exists until a file or public URL is reviewed.
+- The Notion roadmap and Week 9 page were stale at implementation start and still require exact-commit synchronization after publication.
+- Next: finish style verification, review/stage explicit paths, publish purpose-based commits, verify GitHub Actions at the public commit, then update the existing Notion Week 9 and roadmap pages.
