@@ -1,13 +1,12 @@
+using System.Net.Sockets;
 using CoopGameServer.Grains.GameRooms;
 using CoopGameServer.Grains.Players.Caching;
 using CoopGameServer.Observability;
 using CoopGameServer.Persistence;
 using CoopGameServer.Persistence.Rewards;
 using CoopGameServer.Silo.Recovery;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
 using StackExchange.Redis;
 
 // Silo는 Grain 구현체를 실제로 실행하는 Orleans 서버 프로세스입니다.
@@ -27,7 +26,7 @@ var host = Host.CreateDefaultBuilder(args)
         services.AddCoopGameServerObservability(
             hostContext.Configuration,
             "CoopGameServer.Silo",
-            includeAspNetCore: false);
+            includeAspNetCore: true);
 
         // Api 프로젝트와 같은 User Secrets 저장소에서 GameDb 연결 문자열을 읽습니다.
         // Grain은 명령마다 짧게 DbContext를 빌려 쓰므로 Factory 형태로 등록합니다.
@@ -80,12 +79,63 @@ var host = Host.CreateDefaultBuilder(args)
             .ValidateOnStart();
         services.AddSingleton<GameRoomRecoveryProcessor>();
     })
-    .UseOrleans(siloBuilder =>
+    .ConfigureWebHostDefaults(webBuilder =>
     {
-        // 개발 PC에서만 사용하는 단일 Silo 구성입니다.
-        // Orleans의 Silo 간 통신 포트(기본 11111)와 API Client 접속 게이트웨이 포트
-        // (기본 30000)를 localhost에 준비합니다. 운영 환경의 클러스터 구성은 아직 범위 밖입니다.
-        siloBuilder.UseLocalhostClustering();
+        webBuilder.ConfigureServices(services =>
+        {
+            services.AddHealthChecks()
+                .AddCheck<PostgreSqlReadinessHealthCheck>(
+                    "postgresql",
+                    tags: ["ready"],
+                    timeout: TimeSpan.FromSeconds(3));
+        });
+        webBuilder.Configure(app =>
+        {
+            app.UseRouting();
+            app.UseEndpoints(endpoints =>
+            {
+                endpoints.MapHealthChecks("/health/live", new HealthCheckOptions
+                {
+                    // 프로세스와 HTTP 파이프라인만 확인하고 외부 의존성을 호출하지 않습니다.
+                    Predicate = _ => false,
+                });
+                endpoints.MapHealthChecks("/health/ready", new HealthCheckOptions
+                {
+                    Predicate = registration => registration.Tags.Contains("ready"),
+                });
+            });
+        });
+    })
+    .UseOrleans((hostContext, siloBuilder) =>
+    {
+        var advertisedHost = hostContext.Configuration["Orleans:AdvertisedHost"];
+        if (string.IsNullOrWhiteSpace(advertisedHost))
+        {
+            // 설정이 없으면 기존 개발 PC의 localhost 단일 Silo 구성을 유지합니다.
+            siloBuilder.UseLocalhostClustering();
+        }
+        else
+        {
+            var siloPort = hostContext.Configuration.GetValue("Orleans:SiloPort", 11111);
+            var gatewayPort = hostContext.Configuration.GetValue("Orleans:GatewayPort", 30000);
+            var clusterId = hostContext.Configuration["Orleans:ClusterId"] ?? "coopgame-local";
+            var serviceId = hostContext.Configuration["Orleans:ServiceId"] ?? "CoopGameServer";
+
+            // 한 컨테이너 Silo이므로 개발용 멤버십을 유지하되, 다른 컨테이너가 접근할 주소를 광고합니다.
+            siloBuilder.UseLocalhostClustering(
+                siloPort,
+                gatewayPort,
+                primarySiloEndpoint: null,
+                serviceId,
+                clusterId);
+            siloBuilder.ConfigureEndpoints(
+                advertisedHost,
+                siloPort,
+                gatewayPort,
+                AddressFamily.InterNetwork,
+                listenOnAnyHostAddress: true);
+        }
+
         // API에서 시작된 Trace Context를 Grain 실행과 하위 PostgreSQL·Redis Activity로 전달합니다.
         siloBuilder.AddActivityPropagation();
     })

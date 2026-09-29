@@ -6,7 +6,7 @@ using Microsoft.EntityFrameworkCore;
 
 namespace CoopGameServer.Api.Application.Administration;
 
-/// <summary>User Secrets가 명시한 경우에만 로컬 개발용 관리자 계정을 최초 한 번 생성합니다.</summary>
+/// <summary>비밀 설정이 명시된 개발·포트폴리오 환경에서만 관리자 계정을 최초 한 번 생성합니다.</summary>
 public sealed class DevelopmentAdministratorBootstrap(
     IServiceScopeFactory scopeFactory,
     IConfiguration configuration,

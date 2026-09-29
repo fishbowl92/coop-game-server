@@ -26,6 +26,27 @@ public sealed class PlayerProgressionHttpTests(OrleansTestClusterFixture fixture
     private const string TestKey = "isolated-progression-http-signing-key-2026";
 
     [Fact]
+    public async Task HealthEndpointsAreAnonymousAndReadinessChecksPostgreSqlAndOrleans()
+    {
+        await using var database = fixture.CreateDbContext();
+        await using var factory = new ApiFactory(fixture, database.Database.GetConnectionString()!);
+        using var client = factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            BaseAddress = new Uri("https://localhost"),
+        });
+
+        // Authorization 헤더 없이 실제 ASP.NET Core 경로를 호출합니다.
+        // live는 프로세스만, ready는 실제 PostgreSQL과 TestCluster의 Ping Grain까지 확인합니다.
+        var liveResponse = await client.GetAsync("/health/live");
+        var readyResponse = await client.GetAsync("/health/ready");
+
+        liveResponse.EnsureSuccessStatusCode();
+        readyResponse.EnsureSuccessStatusCode();
+        Assert.Equal("Healthy", await liveResponse.Content.ReadAsStringAsync());
+        Assert.Equal("Healthy", await readyResponse.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
     public async Task ProgressionEndpointEnforcesOwnershipAndReturnsCombinedProgression()
     {
         var playerId = Guid.NewGuid();

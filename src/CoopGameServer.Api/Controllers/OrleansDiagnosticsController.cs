@@ -2,8 +2,6 @@ using CoopGameServer.Api.Authentication;
 using CoopGameServer.GrainContracts.Diagnostics;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
-using Orleans;
-using Orleans.Runtime;
 
 namespace CoopGameServer.Api.Controllers;
 

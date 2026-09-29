@@ -1,6 +1,4 @@
 using CoopGameServer.Grains.GameRooms;
-using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace CoopGameServer.Silo.Recovery;

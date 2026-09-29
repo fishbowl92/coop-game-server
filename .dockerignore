@@ -1,0 +1,13 @@
+.git
+.github
+.agents
+.codex
+.env
+**/bin
+**/obj
+**/TestResults
+artifacts
+CoopGameServer
+*.user
+*.suo
+*.log

@@ -1,5 +1,5 @@
 # CI(Continuous Integration, 지속적 통합): GitHub에 push 또는 Pull Request가 올라올 때
-# 새 환경에서 복원·빌드·테스트를 자동으로 수행합니다.
+# 새 환경에서 복원·스타일·취약성·빌드·테스트·컨테이너 이미지를 자동으로 검증합니다.
 name: CI
 
 on:
@@ -14,8 +14,14 @@ permissions:
 
 jobs:
   build-and-test:
-    name: Restore, Build, and Test
+    name: Restore, Style, Audit, Build, Test, and Images
     runs-on: ubuntu-latest
+    env:
+      POSTGRES_USER: coopgame_ci
+      POSTGRES_PASSWORD: ci_only_postgres_password
+      POSTGRES_DB: coopgame_ci
+      JWT_SIGNING_KEY: ci_only_random_signing_key_32_bytes_minimum
+      ADMIN_PASSWORD: ci_only_admin_password
 
     steps:
       # GitHub 실행 환경으로 현재 저장소 코드를 가져옵니다.
@@ -32,6 +38,18 @@ jobs:
       - name: Restore dependencies
         run: dotnet restore CoopGameServer.slnx
 
+      # 과거 자동 생성 Migration은 보존하고, 사람이 관리하는 코드의 스타일을 검사합니다.
+      - name: Verify code style
+        run: dotnet format style CoopGameServer.slnx --verify-no-changes --no-restore --exclude src/CoopGameServer.Persistence/Migrations
+
+      # 컴파일러·SDK 분석기가 제안하는 의미 있는 코드 변경이 남아 있지 않은지 확인합니다.
+      - name: Verify analyzers
+        run: dotnet format analyzers CoopGameServer.slnx --verify-no-changes --no-restore
+
+      # Directory.Build.props의 NuGetAudit 설정이 취약점 발견을 오류로 처리하며, 이 단계는 결과 목록도 남깁니다.
+      - name: Inspect vulnerable packages
+        run: dotnet list CoopGameServer.slnx package --vulnerable --include-transitive --no-restore
+
       # 복원된 의존성을 사용해 Release(배포용 최적화) 구성으로 컴파일합니다.
       - name: Build solution
         run: dotnet build CoopGameServer.slnx --configuration Release --no-restore
@@ -39,3 +57,7 @@ jobs:
       # 빌드 결과를 다시 빌드하지 않고 xUnit 테스트를 실행합니다.
       - name: Run tests
         run: dotnet test CoopGameServer.slnx --configuration Release --no-build
+
+      # 실행 전에 모든 배포 이미지가 같은 공개 소스에서 실제로 만들어지는지 확인합니다.
+      - name: Build application images
+        run: docker compose --profile app build

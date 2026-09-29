@@ -44,6 +44,115 @@ services:
       - "127.0.0.1:${OTLP_GRPC_PORT:-4317}:18889"
       - "127.0.0.1:${OTLP_HTTP_PORT:-4318}:18890"
 
+  migrator:
+    profiles: ["app"]
+    build:
+      context: .
+      dockerfile: src/CoopGameServer.Migrator/Dockerfile
+    container_name: coopgame-migrator
+    environment:
+      ConnectionStrings__GameDb: "Host=postgres;Port=5432;Database=${POSTGRES_DB};Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  silo:
+    profiles: ["app"]
+    build:
+      context: .
+      dockerfile: src/CoopGameServer.Silo/Dockerfile
+    container_name: coopgame-silo
+    environment:
+      ASPNETCORE_URLS: http://+:8080
+      DOTNET_ENVIRONMENT: Production
+      ConnectionStrings__GameDb: "Host=postgres;Port=5432;Database=${POSTGRES_DB};Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
+      ConnectionStrings__Redis: redis:6379
+      Orleans__AdvertisedHost: silo
+      Orleans__SiloPort: 11111
+      Orleans__GatewayPort: 30000
+      Orleans__ClusterId: coopgame-compose
+      Orleans__ServiceId: CoopGameServer
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://observability-dashboard:18889
+      OTEL_SERVICE_NAME: CoopGameServer.Silo
+    depends_on:
+      migrator:
+        condition: service_completed_successfully
+      redis:
+        # Redis는 Cache-Aside 보조 저장소입니다. 시작은 기다리지만 readiness 필수 조건은 아닙니다.
+        condition: service_started
+    ports:
+      - "127.0.0.1:${SILO_HEALTH_HOST_PORT:-5266}:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    restart: unless-stopped
+
+  api:
+    profiles: ["app"]
+    build:
+      context: .
+      dockerfile: src/CoopGameServer.Api/Dockerfile
+    container_name: coopgame-api
+    environment:
+      ASPNETCORE_URLS: http://+:8080
+      ASPNETCORE_ENVIRONMENT: Production
+      HttpsRedirection__Enabled: "false"
+      ConnectionStrings__GameDb: "Host=postgres;Port=5432;Database=${POSTGRES_DB};Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
+      Authentication__Jwt__Issuer: CoopGameServer
+      Authentication__Jwt__Audience: CoopGameClient
+      # 빈 값이면 API의 시작 검증이 실패합니다. Profile 밖의 로컬 인프라 명령은 계속 사용할 수 있습니다.
+      Authentication__Jwt__SigningKey: ${JWT_SIGNING_KEY:-}
+      DevelopmentAdministrator__Enabled: "true"
+      DevelopmentAdministrator__LoginId: ${ADMIN_LOGIN_ID:-portfolio_admin}
+      DevelopmentAdministrator__Password: ${ADMIN_PASSWORD:-}
+      DevelopmentAdministrator__Nickname: ${ADMIN_NICKNAME:-PortfolioAdmin}
+      Orleans__GatewayHost: silo
+      Orleans__GatewayPort: 30000
+      Orleans__ClusterId: coopgame-compose
+      Orleans__ServiceId: CoopGameServer
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://observability-dashboard:18889
+      OTEL_SERVICE_NAME: CoopGameServer.Api
+    depends_on:
+      silo:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${API_HOST_PORT:-5265}:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    restart: unless-stopped
+
+  admin:
+    profiles: ["app"]
+    build:
+      context: .
+      dockerfile: src/CoopGameServer.Admin/Dockerfile
+    container_name: coopgame-admin
+    environment:
+      ASPNETCORE_URLS: http://+:8080
+      ASPNETCORE_ENVIRONMENT: Production
+      HttpsRedirection__Enabled: "false"
+      AdminApi__BaseUrl: http://api:8080/
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${ADMIN_HOST_PORT:-5275}:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    restart: unless-stopped
+
 volumes:
   postgres_data:
   redis_data:

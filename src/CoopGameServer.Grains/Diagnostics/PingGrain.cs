@@ -1,6 +1,5 @@
 using CoopGameServer.GrainContracts.Diagnostics;
 using Microsoft.Extensions.Logging;
-using Orleans;
 
 namespace CoopGameServer.Grains.Diagnostics;
 

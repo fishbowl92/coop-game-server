@@ -1,5 +1,5 @@
-using CoopGameServer.Api.Authentication;
 using CoopGameServer.Api.Application.Parties;
+using CoopGameServer.Api.Authentication;
 using CoopGameServer.Contracts.Parties;
 using CoopGameServer.GrainContracts.Parties;
 using Microsoft.AspNetCore.Authorization;

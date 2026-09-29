@@ -1,3 +1,4 @@
+using System.Net;
 using System.Text;
 using CoopGameServer.Api.Application.Administration;
 using CoopGameServer.Api.Application.Authentication;
@@ -6,13 +7,16 @@ using CoopGameServer.Api.Application.Matchmaking;
 using CoopGameServer.Api.Application.Parties;
 using CoopGameServer.Api.Application.Rewards;
 using CoopGameServer.Api.Authentication;
+using CoopGameServer.Api.Health;
 using CoopGameServer.Domain.Accounts;
 using CoopGameServer.Observability;
 using CoopGameServer.Persistence;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
+using Orleans.Configuration;
 
 var builder = WebApplication.CreateBuilder(new WebApplicationOptions
 {
@@ -78,9 +82,11 @@ builder.Services.AddAuthorization(options =>
 
 // PasswordHasher는 비밀번호 원문을 저장하지 않고 salt를 포함한 검증용 해시만 만들고 비교합니다.
 builder.Services.AddScoped<IPasswordHasher<Account>, PasswordHasher<Account>>();
-if (builder.Environment.IsDevelopment())
+if (builder.Environment.IsDevelopment() ||
+    builder.Configuration.GetValue<bool>("DevelopmentAdministrator:Enabled"))
 {
-    // User Secrets가 세 값을 모두 제공할 때만 로컬 관리자 계정을 생성합니다.
+    // 개발 환경 또는 명시적으로 활성화한 로컬 포트폴리오 환경에서만 관리자 계정을 생성합니다.
+    // LoginId·Password·Nickname 중 하나라도 없으면 Bootstrap은 아무 변경 없이 종료합니다.
     builder.Services.AddHostedService<DevelopmentAdministratorBootstrap>();
 }
 
@@ -102,11 +108,31 @@ builder.Services.AddScoped<MatchmakingService>();
 builder.Services.AddScoped<GameRoomService>();
 
 // Orleans Client(클라이언트)는 Silo에 있는 Grain을 API 코드에서 호출하게 해 줍니다.
-// 현재는 개발 PC의 단일 Silo에만 연결합니다. 운영 환경의 다중 Silo·클러스터 설정은
-// 파티와 매칭 기능이 동작한 뒤 별도 단계에서 다룹니다.
+// GatewayHost가 없으면 기존 localhost 개발 모드를, 있으면 컨테이너 DNS로 찾은 단일 Gateway를 사용합니다.
 builder.Host.UseOrleansClient(clientBuilder =>
 {
-    clientBuilder.UseLocalhostClustering();
+    var gatewayHost = builder.Configuration["Orleans:GatewayHost"];
+    if (string.IsNullOrWhiteSpace(gatewayHost))
+    {
+        clientBuilder.UseLocalhostClustering();
+    }
+    else
+    {
+        var gatewayAddress = Dns.GetHostAddresses(gatewayHost)
+            .FirstOrDefault(address => address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
+            ?? throw new InvalidOperationException($"Orleans GatewayHost '{gatewayHost}'의 IPv4 주소를 찾지 못했습니다.");
+        var gatewayPort = builder.Configuration.GetValue("Orleans:GatewayPort", 30000);
+        var clusterId = builder.Configuration["Orleans:ClusterId"] ?? "coopgame-local";
+        var serviceId = builder.Configuration["Orleans:ServiceId"] ?? "CoopGameServer";
+
+        clientBuilder.UseStaticClustering(new IPEndPoint(gatewayAddress, gatewayPort));
+        clientBuilder.Configure<ClusterOptions>(options =>
+        {
+            options.ClusterId = clusterId;
+            options.ServiceId = serviceId;
+        });
+    }
+
     // W3C Trace Context를 Orleans 메시지에 실어 API의 HTTP Trace와 Silo Grain 실행을 연결합니다.
     clientBuilder.AddActivityPropagation();
 });
@@ -114,6 +140,15 @@ builder.Host.UseOrleansClient(clientBuilder =>
 builder.Services.AddControllers();
 builder.Services.AddGameRoomRateLimits();
 builder.Services.AddOpenApi();
+builder.Services.AddHealthChecks()
+    .AddCheck<PostgreSqlReadinessHealthCheck>(
+        "postgresql",
+        tags: ["ready"],
+        timeout: TimeSpan.FromSeconds(3))
+    .AddCheck<OrleansReadinessHealthCheck>(
+        "orleans",
+        tags: ["ready"],
+        timeout: TimeSpan.FromSeconds(3));
 
 var app = builder.Build();
 
@@ -122,7 +157,10 @@ if (app.Environment.IsDevelopment())
     app.MapOpenApi();
 }
 
-app.UseHttpsRedirection();
+if (builder.Configuration.GetValue("HttpsRedirection:Enabled", true))
+{
+    app.UseHttpsRedirection();
+}
 
 // 반드시 UseAuthorization보다 먼저 실행해야 JWT를 ClaimsPrincipal로 변환할 수 있습니다.
 app.UseAuthentication();
@@ -130,6 +168,15 @@ app.UseAuthorization();
 app.UseRateLimiter();
 
 app.MapControllers();
+app.MapHealthChecks("/health/live", new HealthCheckOptions
+{
+    // 생존 확인은 외부 의존성을 호출하지 않습니다.
+    Predicate = _ => false,
+});
+app.MapHealthChecks("/health/ready", new HealthCheckOptions
+{
+    Predicate = registration => registration.Tags.Contains("ready"),
+});
 
 app.Run();
 

@@ -7,5 +7,10 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <!-- .NET SDK가 제공하는 권장 코드 분석 규칙을 사용합니다. -->
     <AnalysisLevel>latest-recommended</AnalysisLevel>
+    <!-- 직접·간접 NuGet 패키지의 알려진 취약점을 복원 단계에서 검사합니다. -->
+    <NuGetAudit>true</NuGetAudit>
+    <NuGetAuditMode>all</NuGetAuditMode>
+    <!-- 심각도와 관계없이 알려진 취약점이 있으면 같은 소스 상태의 CI를 실패시킵니다. -->
+    <WarningsAsErrors>$(WarningsAsErrors);NU1901;NU1902;NU1903;NU1904</WarningsAsErrors>
   </PropertyGroup>
 </Project>
