@@ -1,4 +1,5 @@
 using CoopGameServer.Domain.Players;
+using CoopGameServer.Grains.Persistence;
 using CoopGameServer.Grains.Players.Caching;
 using CoopGameServer.Observability;
 using CoopGameServer.Persistence;
@@ -118,6 +119,7 @@ public sealed class OrleansTestActivityPropagationConfigurator : ISiloConfigurat
     public void Configure(ISiloBuilder siloBuilder)
     {
         siloBuilder.AddActivityPropagation();
+        siloBuilder.AddIncomingGrainCallFilter<PersistenceExceptionFilter>();
     }
 }
 

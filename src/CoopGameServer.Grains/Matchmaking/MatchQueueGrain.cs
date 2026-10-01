@@ -112,6 +112,15 @@ public sealed class MatchQueueGrain(IDbContextFactory<GameDbContext> dbContextFa
     /// <summary>
     /// 매칭 결과의 roomId를 Grain 키와 생성 requestId로 함께 사용해 Ready 게임 방을 멱등하게 보장합니다.
     /// </summary>
+    public Task RecoverRoomAsync(Guid roomId)
+    {
+        // 배정과 최초 응답은 티켓과 같은 트랜잭션에 저장되어 있습니다. 현재 시각으로 배정을 새로 만들지 않습니다.
+        var assignment = _state.GetStoredRequests().Select(request => request.Result.Match)
+            .FirstOrDefault(match => match?.RoomId == roomId)
+            ?? throw new InvalidOperationException("복구할 방의 영속 매칭 배정이 없습니다.");
+        return EnsureReadyGameRoomAsync(assignment);
+    }
+
     private async Task EnsureReadyGameRoomAsync(MatchAssignment match)
     {
         var gameRoom = GrainFactory.GetGrain<IGameRoomGrain>(match.RoomId);

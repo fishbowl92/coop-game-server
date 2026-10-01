@@ -1,4 +1,5 @@
 using CoopGameServer.GrainContracts.GameRooms;
+using CoopGameServer.GrainContracts.Matchmaking;
 using CoopGameServer.Persistence;
 using CoopGameServer.Persistence.GameRooms;
 using Microsoft.EntityFrameworkCore;
@@ -40,12 +41,15 @@ public sealed partial class GameRoomRecoveryProcessor(
 
         foreach (var roomId in dueRoomIds)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             try
             {
+                // 매칭 커밋 직후 방 생성이 실패한 경우도 저장된 배정을 통해 먼저 복원합니다.
+                await EnsureRoomCreatedAsync(roomId, cancellationToken);
                 // 과거 상태를 Worker가 직접 해석하지 않고 방을 소유한 Grain에게 복구를 맡깁니다.
                 var gameRoom = grainFactory.GetGrain<IGameRoomGrain>(roomId);
-                await gameRoom.ReconcileDeadlinesAsync();
-                await gameRoom.FinalizeCompletedRoomAsync();
+                await gameRoom.ReconcileDeadlinesAsync().WaitAsync(cancellationToken);
+                await gameRoom.FinalizeCompletedRoomAsync().WaitAsync(cancellationToken);
                 succeededRoomCount++;
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -66,6 +70,21 @@ public sealed partial class GameRoomRecoveryProcessor(
             dueRoomIds.Length,
             succeededRoomCount,
             failedRoomCount);
+    }
+
+    /// <summary>이미 생성된 방은 건드리지 않고 매칭 배정만 있는 방을 같은 ID로 생성합니다.</summary>
+    private async Task EnsureRoomCreatedAsync(Guid roomId, CancellationToken cancellationToken)
+    {
+        string? queueKey;
+        await using (var context = await dbContextFactory.CreateDbContextAsync(cancellationToken))
+        {
+            if (await context.GameRooms.AnyAsync(room => room.RoomId == roomId, cancellationToken)) return;
+            queueKey = await context.MatchQueueTickets.Where(ticket => ticket.RoomId == roomId
+                && ticket.Status == (int)MatchQueueTicketStatus.Matched)
+                .Select(ticket => ticket.QueueKey).FirstOrDefaultAsync(cancellationToken);
+        }
+        if (queueKey is not null)
+            await grainFactory.GetGrain<IMatchQueueGrain>(queueKey).RecoverRoomAsync(roomId).WaitAsync(cancellationToken);
     }
 
     /// <summary>이번 주기에 처리할 방 ID만 조회하고 DB Context를 Grain 호출 전에 반환합니다.</summary>
@@ -93,7 +112,10 @@ public sealed partial class GameRoomRecoveryProcessor(
             .Union(gameDbContext.GameRoomPlayers.Where(p =>
                 (p.ConnectionStatus == CoopGameServer.Domain.GameRooms.RoomConnectionStatus.Connected && p.LeaseExpiresAt <= now)
                 || (p.ConnectionStatus == CoopGameServer.Domain.GameRooms.RoomConnectionStatus.Disconnected && p.ReconnectDeadline <= now))
-                .Select(p => p.RoomId));
+                .Select(p => p.RoomId))
+            .Union(gameDbContext.MatchQueueTickets.Where(ticket => ticket.Status == (int)MatchQueueTicketStatus.Matched
+                && ticket.RoomId != null && !gameDbContext.GameRooms.Any(room => room.RoomId == ticket.RoomId))
+                .Select(ticket => ticket.RoomId!.Value));
         return await resultRooms
             .Distinct()
             .OrderBy(roomId => roomId)

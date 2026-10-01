@@ -1,5 +1,7 @@
 using System.Net.Sockets;
 using CoopGameServer.Grains.GameRooms;
+using CoopGameServer.Grains.Matchmaking;
+using CoopGameServer.Grains.Persistence;
 using CoopGameServer.Grains.Players.Caching;
 using CoopGameServer.Observability;
 using CoopGameServer.Persistence;
@@ -78,6 +80,7 @@ var host = Host.CreateDefaultBuilder(args)
             .Validate(options => options.BatchSize > 0, "Batch 크기는 0보다 커야 합니다")
             .ValidateOnStart();
         services.AddSingleton<GameRoomRecoveryProcessor>();
+        services.AddSingleton<MatchmakingRecoveryProcessor>();
     })
     .ConfigureWebHostDefaults(webBuilder =>
     {
@@ -138,6 +141,7 @@ var host = Host.CreateDefaultBuilder(args)
 
         // API에서 시작된 Trace Context를 Grain 실행과 하위 PostgreSQL·Redis Activity로 전달합니다.
         siloBuilder.AddActivityPropagation();
+        siloBuilder.AddIncomingGrainCallFilter<PersistenceExceptionFilter>();
     })
     .ConfigureServices(services =>
     {

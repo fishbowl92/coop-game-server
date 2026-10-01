@@ -13,6 +13,38 @@ public sealed class GameRoomPlayerMigrationTests
     private const string Baseline = "20260827152943_AddGameResultDeliveryTracking";
     private const string PlayerStateBaseline = "20260909183928_AddGameRoomPlayerState";
 
+    [Fact]
+    public async Task DurableRecoveryMigrationMarksOnlyCompletedRoomsWithUnreleasedTickets()
+    {
+        await using var database = Database();
+        await database.StartAsync();
+        await using var context = Context(database);
+        var migrator = context.GetService<IMigrator>();
+        await migrator.MigrateAsync("20260917222951_AddAdminAuditRewardReference");
+        var now = DateTimeOffset.UtcNow;
+        var players = Enumerable.Range(0, 4).Select(_ => Guid.NewGuid()).ToArray();
+        var pendingId = Guid.NewGuid();
+        var finishedId = Guid.NewGuid();
+        foreach (var id in new[] { pendingId, finishedId })
+            context.GameRooms.Add(new CoopGameServer.Persistence.GameRooms.GameRoomRecord(
+                id, "migration-recovery", 2, [], players, now, now, now, 3, 1));
+        context.MatchQueueTickets.Add(new CoopGameServer.Persistence.Matchmaking.MatchQueueTicketRecord(
+            Guid.NewGuid(), "migration-recovery", 1, null, players[0], 1, pendingId, now, 1));
+        await context.SaveChangesAsync();
+        var before = await context.Database.SqlQuery<string>($"""
+            SELECT (to_jsonb(r) - 'finalization_pending')::text AS "Value" FROM game_rooms r ORDER BY room_id
+            """).ToArrayAsync();
+
+        await migrator.MigrateAsync();
+        context.ChangeTracker.Clear();
+        Assert.True((await context.GameRooms.SingleAsync(row => row.RoomId == pendingId)).FinalizationPending);
+        Assert.False((await context.GameRooms.SingleAsync(row => row.RoomId == finishedId)).FinalizationPending);
+        Assert.Equal(before, await context.Database.SqlQuery<string>($"""
+            SELECT (to_jsonb(r) - 'finalization_pending')::text AS "Value" FROM game_rooms r ORDER BY room_id
+            """).ToArrayAsync());
+        Assert.False(context.Database.HasPendingModelChanges());
+    }
+
     [Theory]
     [InlineData(0)]
     [InlineData(1)]

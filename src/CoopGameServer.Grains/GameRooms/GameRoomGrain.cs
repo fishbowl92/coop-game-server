@@ -7,6 +7,7 @@ using System.Text.Json.Serialization;
 using CoopGameServer.GrainContracts.GameRooms;
 using CoopGameServer.GrainContracts.Matchmaking;
 using CoopGameServer.GrainContracts.Parties;
+using CoopGameServer.GrainContracts.Persistence;
 using CoopGameServer.GrainContracts.Players;
 using CoopGameServer.Persistence;
 using CoopGameServer.Persistence.GameRooms;
@@ -254,7 +255,6 @@ public sealed partial class GameRoomGrain(
     /// <inheritdoc />
     public async Task<GameRoomCommandResult> CompleteAsync(Guid requestId, GameOutcome outcome)
     {
-        var currentRoom = _state.Get();
         var candidateState = _state.Clone();
         var result = candidateState.Complete(requestId, outcome, timeProvider.GetUtcNow());
 
@@ -269,24 +269,10 @@ public sealed partial class GameRoomGrain(
             // 같은 requestId 재시도에서도 Queue의 완료 상태를 다시 확인해 최종 상태로 수렴시킵니다.
             if (result.Error is GameRoomCommandError.None)
             {
-                await EnsureMatchTicketsCompletedAsync(
-                    currentRoom ?? throw new InvalidOperationException("완료된 게임 방 상태가 없습니다."),
-                    requestId);
                 await FinalizeCompletedRoomAsync();
             }
 
             return result;
-        }
-
-        if (result.Error is GameRoomCommandError.None)
-        {
-            var partyFailure = await CompletePreformedPartiesAsync(
-                currentRoom ?? throw new InvalidOperationException("완료할 게임 방 상태가 없습니다."),
-                requestId);
-            if (partyFailure is not null)
-            {
-                return partyFailure;
-            }
         }
 
         await PersistCandidateStateAsync(candidateState, requestId);
@@ -295,9 +281,6 @@ public sealed partial class GameRoomGrain(
         {
             // 방 완료가 PostgreSQL에 확정된 뒤에만 참가자를 현재 매칭에서 해제합니다.
             // 반대 순서라면 방은 아직 InGame인데 같은 플레이어가 새 방에 들어갈 수 있습니다.
-            await EnsureMatchTicketsCompletedAsync(
-                candidateState.Get() ?? throw new InvalidOperationException("완료된 게임 방 상태가 없습니다."),
-                requestId);
             await FinalizeCompletedRoomAsync();
         }
 
@@ -319,6 +302,10 @@ public sealed partial class GameRoomGrain(
             var record = await context.GameRooms.SingleAsync(r => r.RoomId == room.RoomId);
             if (record.FinalizationPending)
             {
+                // 예전 관리자 완료가 먼저 파티를 해제했을 수 있으므로 그때의 하위 요청 키도 유지합니다.
+                var completionRequestId = _state.GetStoredRequests().FirstOrDefault(request =>
+                    request.CommandKind == GameRoomCommandKind.Complete && request.Result.Error == GameRoomCommandError.None)
+                    ?.RequestId ?? room.RoomId;
                 foreach (var partyId in room.PartyIds)
                 {
                     // 조회 후 상태를 판단하지 않고 같은 하위 요청을 재생합니다. 파티가 새 게임에 들어간 뒤에도
@@ -330,19 +317,19 @@ public sealed partial class GameRoomGrain(
                         // 현재 리더가 아니라 당시 매칭 티켓의 리더를 사용해야 재시도 입력이 변하지 않습니다.
                         var ticket = await context.MatchQueueTickets.AsNoTracking()
                             .SingleAsync(t => t.RoomId == room.RoomId && t.PartyId == partyId);
-                        partyResult = await party.CancelMatchQueueAsync(CreatePartyRequestId(room.RoomId, partyId, 3), ticket.LeaderPlayerId);
+                        partyResult = await party.CancelMatchQueueAsync(CreatePartyRequestId(completionRequestId, partyId, 3), ticket.LeaderPlayerId);
                         // 시작 중 외부 파티만 InGame으로 넘어간 경우도 같은 완료 키로 복구합니다.
                         if (partyResult.Error != PartyCommandError.None)
-                            partyResult = await party.CompleteGameAsync(CreatePartyRequestId(room.RoomId, partyId, 2), room.RoomId);
+                            partyResult = await party.CompleteGameAsync(CreatePartyRequestId(completionRequestId, partyId, 2), room.RoomId);
                     }
-                    else partyResult = await party.CompleteGameAsync(CreatePartyRequestId(room.RoomId, partyId, 2), room.RoomId);
+                    else partyResult = await party.CompleteGameAsync(CreatePartyRequestId(completionRequestId, partyId, 2), room.RoomId);
                     if (partyResult.Error != PartyCommandError.None)
                     {
                         throw new InvalidOperationException($"파티 복귀가 보류됐습니다: {partyResult.Error}");
                     }
                 }
 
-                await EnsureMatchTicketsCompletedAsync(room, room.RoomId);
+                await EnsureMatchTicketsCompletedAsync(room, completionRequestId);
                 record.SetFinalizationPending(false);
                 await context.SaveChangesAsync();
             }
@@ -397,9 +384,15 @@ public sealed partial class GameRoomGrain(
                 var retryDelay = CalculateRetryDelay(pendingResult.AttemptCount + 1);
                 await PersistRetryAsync(
                     pendingResult,
-                    exception.GetType().Name,
+                    exception is GrainPersistenceException persistence ? $"Database.{persistence.ErrorCode}" : exception.GetType().Name,
                     failedAt + retryDelay,
                     failedAt);
+                continue;
+            }
+            catch (GrainPersistenceException exception)
+            {
+                // 제약 위반 등 영구 오류는 해당 참가자의 최종 실패로 남기고 나머지 참가자를 계속 처리합니다.
+                await PersistTerminalFailureAsync(pendingResult, $"Database.{exception.ErrorCode}", timeProvider.GetUtcNow());
                 continue;
             }
 
@@ -513,6 +506,7 @@ public sealed partial class GameRoomGrain(
     private static bool IsTransientDeliveryException(Exception exception)
     {
         return exception is TimeoutException
+            or GrainPersistenceException { IsTransient: true }
             or DbException
             or SiloUnavailableException
             or OrleansMessageRejectionException
@@ -604,54 +598,6 @@ public sealed partial class GameRoomGrain(
         return null;
     }
 
-    /// <summary>게임 중인 사전 구성 파티를 멤버 그대로 Active 로비 상태로 되돌립니다.</summary>
-    private async Task<GameRoomCommandResult?> CompletePreformedPartiesAsync(
-        GameRoomSnapshot room,
-        Guid roomRequestId)
-    {
-        var pendingTransitions = new List<(Guid PartyId, IPartyGrain Party)>();
-
-        foreach (var partyId in room.PartyIds)
-        {
-            var party = GrainFactory.GetGrain<IPartyGrain>(partyId);
-            var snapshot = await party.GetAsync();
-            if (snapshot is null)
-            {
-                return _state.PartyTransitionFailure(partyId, PartyCommandError.PartyNotCreated);
-            }
-
-            switch (snapshot.Lifecycle)
-            {
-                case PartyLifecycle.InGame when snapshot.CurrentRoomId == room.RoomId:
-                    pendingTransitions.Add((partyId, party));
-                    break;
-                case PartyLifecycle.Active:
-                    // 이전 시도에서 Party 완료는 성공하고 GameRoom DB 저장만 실패한 경우입니다.
-                    break;
-                case PartyLifecycle.InGame:
-                    return _state.PartyTransitionFailure(partyId, PartyCommandError.RoomIdMismatch);
-                case PartyLifecycle.MatchQueued:
-                    return _state.PartyTransitionFailure(partyId, PartyCommandError.PartyNotInGame);
-                case PartyLifecycle.Disbanded:
-                    return _state.PartyTransitionFailure(partyId, PartyCommandError.PartyDisbanded);
-                default:
-                    throw new InvalidOperationException("알 수 없는 파티 생명 주기 상태입니다.");
-            }
-        }
-
-        foreach (var (partyId, party) in pendingTransitions)
-        {
-            var partyRequestId = CreatePartyRequestId(roomRequestId, partyId, operationMarker: 2);
-            var partyResult = await party.CompleteGameAsync(partyRequestId, room.RoomId);
-            if (partyResult.Error is not PartyCommandError.None)
-            {
-                return _state.PartyTransitionFailure(partyId, partyResult.Error);
-            }
-        }
-
-        return null;
-    }
-
     /// <summary>
     /// 방 요청·파티·작업 종류에서 항상 같은 하위 requestId를 만들어 중간 실패 후 호출을 안전하게 재시도합니다.
     /// </summary>
@@ -697,9 +643,8 @@ public sealed partial class GameRoomGrain(
         await using var transaction = await gameDbContext.Database.BeginTransactionAsync();
 
         await SynchronizeStateAsync(gameDbContext, this.GetPrimaryKey(), candidateState);
-        if (newRequest.CommandKind == GameRoomCommandKind.Combat
-            && newRequest.CombatError == GameRoomCombatError.None
-            && candidateState.Get()?.Lifecycle == GameRoomLifecycle.Completed)
+        if (candidateState.Get()?.Lifecycle == GameRoomLifecycle.Completed
+            && _state.Get()?.Lifecycle != GameRoomLifecycle.Completed)
         {
             var roomRecord = await gameDbContext.GameRooms.SingleAsync(r => r.RoomId == this.GetPrimaryKey());
             roomRecord.SetFinalizationPending(true);

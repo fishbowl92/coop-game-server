@@ -77,6 +77,9 @@ public sealed class GameDbContext : DbContext
     /// <summary>match_queue_requests 테이블에 대응하는 매칭 대기열 명령 기록 집합입니다.</summary>
     public DbSet<MatchQueueRequestRecord> MatchQueueRequests => Set<MatchQueueRequestRecord>();
 
+    /// <summary>외부 호출자 없이도 재개할 수 있는 매칭 변경 의도와 최종 결과입니다.</summary>
+    public DbSet<MatchmakingOperationRecord> MatchmakingOperations => Set<MatchmakingOperationRecord>();
+
     /// <summary>game_rooms 테이블에 대응하는 게임 방 현재 상태 집합입니다.</summary>
     public DbSet<GameRoomRecord> GameRooms => Set<GameRoomRecord>();
 
@@ -272,7 +275,25 @@ public sealed class GameDbContext : DbContext
         ConfigureAdminAuditPersistence(modelBuilder);
         ConfigurePartyPersistence(modelBuilder);
         ConfigureMatchQueuePersistence(modelBuilder);
+        ConfigureMatchmakingOperations(modelBuilder);
         ConfigureGameRoomPersistence(modelBuilder);
+    }
+
+    /// <summary>완료 결과가 없는 작업만 다음 재시도 시각 순으로 조회합니다.</summary>
+    private static void ConfigureMatchmakingOperations(ModelBuilder modelBuilder)
+    {
+        var operation = modelBuilder.Entity<MatchmakingOperationRecord>();
+        operation.ToTable("matchmaking_operations");
+        operation.HasKey(row => row.OperationKey);
+        operation.Property(row => row.OperationKey).HasColumnName("operation_key").HasMaxLength(133);
+        operation.Property(row => row.RequestPayloadJson).HasColumnName("request_payload_json").HasColumnType("jsonb");
+        operation.Property(row => row.LeaderPlayerId).HasColumnName("leader_player_id");
+        operation.Property(row => row.PartyId).HasColumnName("party_id");
+        operation.Property(row => row.CreatedAt).HasColumnName("created_at");
+        operation.Property(row => row.NextAttemptAt).HasColumnName("next_attempt_at");
+        operation.Property(row => row.ResultPayloadJson).HasColumnName("result_payload_json").HasColumnType("jsonb");
+        operation.HasIndex(row => new { row.NextAttemptAt, row.OperationKey })
+            .HasFilter("result_payload_json IS NULL");
     }
 
     /// <summary>관리자 보상과 실행 계정을 추적할 변경 불가능한 성공 감사 테이블을 구성합니다.</summary>

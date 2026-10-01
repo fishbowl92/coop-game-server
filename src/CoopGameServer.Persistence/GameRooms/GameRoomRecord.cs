@@ -88,7 +88,7 @@ public sealed class GameRoomRecord
     /// <summary>실제 적 반격 횟수입니다. 일반 상태 변경으로 증가시키지 않습니다.</summary>
     public long EnemyAttackSequence { get; private set; }
 
-    /// <summary>새 전투 완료 후 파티·티켓 복귀가 아직 끝나지 않았는지 나타냅니다. 과거 완료 기록은 false로 유지합니다.</summary>
+    /// <summary>전투·관리자 취소·기한 만료 뒤 파티와 티켓의 후처리가 아직 끝나지 않았는지 나타냅니다.</summary>
     public bool FinalizationPending { get; private set; }
     /// <summary>최초 입장 마감입니다. 재시작이나 Heartbeat로 연장하지 않습니다.</summary>
     public DateTimeOffset? InitialConnectDeadline { get; private set; }

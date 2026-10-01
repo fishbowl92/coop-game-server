@@ -1,4 +1,5 @@
 using CoopGameServer.Grains.GameRooms;
+using CoopGameServer.Grains.Matchmaking;
 using Microsoft.Extensions.Options;
 
 namespace CoopGameServer.Silo.Recovery;
@@ -12,6 +13,7 @@ namespace CoopGameServer.Silo.Recovery;
 /// </remarks>
 public sealed partial class GameRoomRecoveryService(
     GameRoomRecoveryProcessor recoveryProcessor,
+    MatchmakingRecoveryProcessor matchmakingRecoveryProcessor,
     IOptions<GameRoomRecoveryOptions> options,
     ILogger<GameRoomRecoveryService> logger) : BackgroundService
 {
@@ -29,6 +31,8 @@ public sealed partial class GameRoomRecoveryService(
         {
             try
             {
+                // 매칭의 잠금/해제를 먼저 이어가고, 방 생성과 방 완료의 미완료 작업을 처리합니다.
+                await matchmakingRecoveryProcessor.RecoverPendingOperationsAsync(_options.BatchSize, stoppingToken);
                 // 시작 직후에도 한 번 실행하므로 Silo 중단 중 쌓인 Pending을 즉시 확인합니다.
                 var result = await recoveryProcessor.RecoverDueRoomsAsync(
                     _options.BatchSize,

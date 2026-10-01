@@ -1,4 +1,3 @@
-using System.Security.Cryptography;
 using CoopGameServer.Contracts.Matchmaking;
 using CoopGameServer.GrainContracts.Matchmaking;
 using CoopGameServer.GrainContracts.Parties;
@@ -88,64 +87,8 @@ public sealed class MatchmakingService(IGrainFactory grainFactory, GameDbContext
             return QueueFailure(MatchQueueCommandError.InvalidRequestId);
         }
 
-        var party = grainFactory.GetGrain<IPartyGrain>(partyId);
-        var snapshot = await party.GetAsync().WaitAsync(cancellationToken);
-        if (snapshot is null)
-        {
-            return Failure(MatchmakingApplicationError.PartyNotFound);
-        }
-
-        var leaderPlayerId = snapshot.LeaderPlayerId;
-        if (leaderPlayerId is null)
-        {
-            return Failure(
-                MatchmakingApplicationError.PartyTransitionFailed,
-                PartyCommandError.PartyDisbanded);
-        }
-
-        if (!isAdministrator && leaderPlayerId.Value != requesterPlayerId)
-        {
-            return Failure(MatchmakingApplicationError.RequesterIsNotPartyLeader);
-        }
-
-        // 하나의 외부 요청이 PartyGrain과 MatchQueueGrain 양쪽을 호출합니다.
-        // 파티 명령에는 결정적인 하위 requestId를 써서 같은 HTTP 요청 재전송이 같은 결과로 수렴하게 합니다.
-        var partyQueueRequestId = CreateChildRequestId(requestId, partyId, operationMarker: 1);
-        var partyResult = await party
-            .QueueForMatchAsync(partyQueueRequestId, leaderPlayerId.Value)
-            .WaitAsync(cancellationToken);
-        if (partyResult.Error is not PartyCommandError.None)
-        {
-            return Failure(MatchmakingApplicationError.PartyTransitionFailed, partyResult.Error);
-        }
-
-        var queuedParty = partyResult.Party
-            ?? throw new InvalidOperationException("매칭 대기 전환에 성공한 파티 스냅샷이 없습니다.");
-        var queueRequest = new MatchQueueEntryRequest(
-            requestId,
-            MatchQueueEntryKind.PreformedParty,
-            partyId,
-            leaderPlayerId.Value,
-            queuedParty.MemberPlayerIds.ToArray());
-        var queueResult = await GetQueue(queueKey)
-            .EnqueueAsync(queueRequest)
-            .WaitAsync(cancellationToken);
-
-        if (queueResult.Error is not MatchQueueCommandError.None)
-        {
-            // 대기열이 명시적으로 거부했다면 멤버 잠금이 남지 않도록 Active 상태로 보상 복구합니다.
-            // Orleans 호출 예외처럼 성공 여부를 모르는 경우에는 여기까지 오지 않으므로 섣불리 되돌리지 않습니다.
-            var compensationRequestId = CreateChildRequestId(requestId, partyId, operationMarker: 2);
-            var compensation = await party
-                .CancelMatchQueueAsync(compensationRequestId, leaderPlayerId.Value)
-                .WaitAsync(cancellationToken);
-            if (compensation.Error is not PartyCommandError.None)
-            {
-                return Failure(MatchmakingApplicationError.PartyCompensationFailed, compensation.Error);
-            }
-        }
-
-        return Success(queueResult);
+        return await ExecuteOperationAsync(new MatchmakingOperationRequest(queueKey, requestId,
+            MatchmakingOperationKind.EnqueueParty, partyId, requesterPlayerId, isAdministrator), cancellationToken);
     }
 
     /// <summary>티켓 소유자 또는 관리자의 요청만 대기를 취소하고 사전 구성 파티의 잠금을 풉니다.</summary>
@@ -167,38 +110,9 @@ public sealed class MatchmakingService(IGrainFactory grainFactory, GameDbContext
             return QueueFailure(MatchQueueCommandError.InvalidRequestId);
         }
 
-        var queue = GetQueue(queueKey);
-        var ticket = await queue.GetTicketAsync(ticketId).WaitAsync(cancellationToken);
-        if (ticket is null)
-        {
-            return QueueFailure(MatchQueueCommandError.TicketNotFound);
-        }
-
-        if (!isAdministrator && ticket.LeaderPlayerId != requesterPlayerId)
-        {
-            return Failure(MatchmakingApplicationError.RequesterCannotManageTicket);
-        }
-
-        var queueResult = await queue
-            .CancelAsync(new CancelMatchQueueRequest(
-                requestId,
-                ticketId,
-                ticket.LeaderPlayerId))
-            .WaitAsync(cancellationToken);
-
-        if (queueResult.Error is MatchQueueCommandError.None && ticket.PartyId is Guid partyId)
-        {
-            var partyRequestId = CreateChildRequestId(requestId, partyId, operationMarker: 3);
-            var partyResult = await grainFactory.GetGrain<IPartyGrain>(partyId)
-                .CancelMatchQueueAsync(partyRequestId, ticket.LeaderPlayerId)
-                .WaitAsync(cancellationToken);
-            if (partyResult.Error is not PartyCommandError.None)
-            {
-                return Failure(MatchmakingApplicationError.PartyTransitionFailed, partyResult.Error);
-            }
-        }
-
-        return Success(queueResult);
+        if (ticketId == Guid.Empty) return QueueFailure(MatchQueueCommandError.TicketNotFound);
+        return await ExecuteOperationAsync(new MatchmakingOperationRequest(queueKey, requestId,
+            MatchmakingOperationKind.Cancel, ticketId, requesterPlayerId, isAdministrator), cancellationToken);
     }
 
     /// <summary>인증된 호출자가 열람 권한을 검사할 수 있도록 티켓 원본 스냅샷을 반환합니다.</summary>
@@ -232,16 +146,23 @@ public sealed class MatchmakingService(IGrainFactory grainFactory, GameDbContext
         return grainFactory.GetGrain<IMatchQueueGrain>(queueKey);
     }
 
-    /// <summary>외부 requestId·파티·작업 종류로 항상 같은 하위 요청 식별자를 만듭니다.</summary>
-    private static Guid CreateChildRequestId(Guid requestId, Guid partyId, byte operationMarker)
+    /// <summary>응답 대기만 취소합니다. 영속 의도를 수락한 서버 Grain은 후속 단계를 계속 실행합니다.</summary>
+    private async Task<MatchmakingApplicationResult> ExecuteOperationAsync(
+        MatchmakingOperationRequest request, CancellationToken cancellationToken)
     {
-        Span<byte> source = stackalloc byte[33];
-        requestId.TryWriteBytes(source[..16]);
-        partyId.TryWriteBytes(source.Slice(16, 16));
-        source[32] = operationMarker;
-
-        var hash = SHA256.HashData(source);
-        return new Guid(hash.AsSpan(0, 16));
+        var result = await grainFactory.GetGrain<IMatchmakingOperationGrain>(request.GetGrainKey())
+            .ExecuteAsync(request).WaitAsync(cancellationToken);
+        var error = result.Error switch
+        {
+            MatchmakingOperationError.None => MatchmakingApplicationError.None,
+            MatchmakingOperationError.PartyNotFound => MatchmakingApplicationError.PartyNotFound,
+            MatchmakingOperationError.RequesterIsNotPartyLeader => MatchmakingApplicationError.RequesterIsNotPartyLeader,
+            MatchmakingOperationError.RequesterCannotManageTicket => MatchmakingApplicationError.RequesterCannotManageTicket,
+            MatchmakingOperationError.PartyTransitionFailed => MatchmakingApplicationError.PartyTransitionFailed,
+            MatchmakingOperationError.PartyCompensationFailed => MatchmakingApplicationError.PartyCompensationFailed,
+            _ => throw new InvalidOperationException("지원하지 않는 매칭 작업 결과입니다."),
+        };
+        return new MatchmakingApplicationResult(error, result.PartyError, result.QueueResult);
     }
 
     private static MatchmakingApplicationResult Success(MatchQueueCommandResult queueResult)

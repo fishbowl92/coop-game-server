@@ -25,4 +25,7 @@ public interface IMatchQueueGrain : IGrainWithStringKey
 
     /// <summary>현재 매칭 조건에서 대기 중인 파티를 등록 순서대로 조회합니다.</summary>
     Task<MatchQueueSnapshot> GetSnapshotAsync();
+
+    /// <summary>영속 저장된 최초 배정을 사용해 아직 생성되지 않은 방을 복구합니다.</summary>
+    Task RecoverRoomAsync(Guid roomId);
 }
