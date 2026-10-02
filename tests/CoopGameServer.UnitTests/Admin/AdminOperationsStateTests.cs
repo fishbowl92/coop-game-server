@@ -106,6 +106,7 @@ public sealed class AdminOperationsStateTests
     [InlineData(HttpStatusCode.Unauthorized)]
     [InlineData(HttpStatusCode.Forbidden)]
     [InlineData(HttpStatusCode.NotFound)]
+    [InlineData(HttpStatusCode.UnprocessableEntity)]
     public async Task FirstDefiniteRejectionAllowsCorrection(HttpStatusCode status)
     {
         using var scenario = new Scenario();
@@ -258,6 +259,20 @@ public sealed class AdminOperationsStateTests
         Assert.Contains(scenario.Reward.Pending!.Request.RequestId.ToString()!, html, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task RefreshReplacesRenamedProfileWithoutChangingTarget()
+    {
+        using var scenario = new Scenario();
+        await scenario.State.LookupAsync("A");
+        scenario.Handler.Respond = request => Task.FromResult(request.Path.EndsWith("/lookup", StringComparison.Ordinal)
+            ? Json(scenario.PlayerA with { Nickname = "Renamed" }) : scenario.Read(request));
+        await scenario.State.RefreshAsync();
+        Assert.Equal(scenario.PlayerA.PlayerId, scenario.State.Selection!.Player.PlayerId);
+        Assert.Equal("Renamed", scenario.State.Selection.Player.Nickname);
+        Assert.Contains("Renamed", await RenderAsync(scenario), StringComparison.Ordinal);
+        Assert.True(scenario.State.CanGrant);
+    }
+
     private static async Task<string> RenderAsync(Scenario scenario)
     {
         var services = new ServiceCollection();
@@ -302,6 +317,7 @@ public sealed class AdminOperationsStateTests
         public HttpResponseMessage Read(ObservedRequest request)
         {
             var player = request.Path.Contains(PlayerB.PlayerId.ToString(), StringComparison.Ordinal) ||
+                request.Query.Contains(PlayerB.PlayerId.ToString(), StringComparison.Ordinal) ||
                 request.Query.Contains("query=B", StringComparison.Ordinal) ? PlayerB : PlayerA;
             if (request.Path.EndsWith("/lookup", StringComparison.Ordinal)) return Json(player);
             if (request.Path.EndsWith("/progression", StringComparison.Ordinal))

@@ -13,8 +13,38 @@ namespace CoopGameServer.IntegrationTests.Grains.Players;
 
 /// <summary>실제 Redis 지연·중단에서 캐시 기반시설이 원본 경계로 실패를 넘기지 않는지 검증합니다.</summary>
 [Collection(OrleansTestClusterSuite.Name)]
-public sealed class RedisPlayerProgressionCacheTests
+public sealed class RedisPlayerProgressionCacheTests(OrleansTestClusterFixture fixture)
 {
+    [Fact]
+    public async Task RefreshingAnotherPageSizeDoesNotExtendExpiredPayload()
+    {
+        await using var connection = await ConnectionMultiplexer.ConnectAsync(fixture.RedisConnectionString);
+        var clock = new CombatTestTimeProvider();
+        clock.Set(DateTimeOffset.UtcNow);
+        var options = new PlayerProgressionCacheOptions
+        {
+            KeyPrefix = $"cache-expiry-test:{Guid.NewGuid():N}",
+            EntryTtl = TimeSpan.FromMinutes(1),
+            MaxJitter = TimeSpan.Zero,
+            OperationTimeout = TimeSpan.FromSeconds(2),
+        };
+        var cache = new RedisPlayerProgressionCache(connection, options, NullLogger<RedisPlayerProgressionCache>.Instance, clock);
+        var player = Guid.NewGuid();
+        var result = new PlayerProgressionPageResult(PlayerProgressionQueryError.None, 100, [], null,
+            player, "ExpiryPlayer", clock.GetUtcNow(), clock.GetUtcNow());
+        await cache.WriteFirstPageAsync(player, 20, result);
+        clock.Advance(TimeSpan.FromSeconds(50));
+        await cache.WriteFirstPageAsync(player, 50, result with { Gold = 200 });
+        clock.Advance(TimeSpan.FromSeconds(11));
+
+        // 실제 Redis 키는 새 쓰기로 살아 있어도 오래된 Field는 반환하지 않아야 합니다.
+        Assert.True(await connection.GetDatabase().KeyExistsAsync($"{options.KeyPrefix}:{player:N}"));
+        Assert.Equal(PlayerProgressionCacheReadStatus.Miss, (await cache.ReadFirstPageAsync(player, 20)).Status);
+        var fresh = await cache.ReadFirstPageAsync(player, 50);
+        Assert.Equal(PlayerProgressionCacheReadStatus.Hit, fresh.Status);
+        Assert.Equal(200, fresh.Value!.Gold);
+    }
+
     [Fact]
     public async Task TimeoutAndDisconnectedMutationsAreReportedWithoutEscaping()
     {

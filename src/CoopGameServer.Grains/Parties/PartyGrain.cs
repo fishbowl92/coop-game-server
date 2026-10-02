@@ -1,4 +1,5 @@
 using CoopGameServer.GrainContracts.Parties;
+using CoopGameServer.Grains.Persistence;
 using CoopGameServer.Persistence;
 using CoopGameServer.Persistence.Parties;
 using Microsoft.EntityFrameworkCore;
@@ -203,6 +204,23 @@ public sealed class PartyGrain(IDbContextFactory<GameDbContext> dbContextFactory
             {
                 candidateState = _state.Clone();
                 result = candidateState.Failure(partyId, PartyCommandError.PlayerNotFound);
+            }
+
+            if (result.Error == PartyCommandError.None)
+            {
+                if (commandKind is PartyCommandKind.Create or PartyCommandKind.Join && playerId is Guid joiningPlayerId)
+                {
+                    // 솔로 등록과 같은 Player 행을 잠근 뒤 검사합니다. API 사전 조회만으로는 경쟁을 막을 수 없습니다.
+                    var exists = await PlayerParticipationGuard.LockAsync(gameDbContext, joiningPlayerId);
+                    var participationError = !exists ? PartyCommandError.PlayerNotFound :
+                        await PlayerParticipationGuard.HasActiveSoloTicketAsync(gameDbContext, joiningPlayerId)
+                            ? PartyCommandError.PlayerAlreadyInMatchmaking : PartyCommandError.None;
+                    if (participationError != PartyCommandError.None)
+                    {
+                        candidateState = _state.Clone();
+                        result = candidateState.Failure(partyId, participationError);
+                    }
+                }
             }
 
             if (result.Error == PartyCommandError.None)

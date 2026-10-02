@@ -492,8 +492,10 @@ public sealed class PlayerGrainTests(OrleansTestClusterFixture fixture)
         Assert.Equal(1, Volatile.Read(ref databaseFillCount));
     }
 
-    [Fact]
-    public async Task CorruptFirstPageIsDiscardedAndFilledAgainFromPostgreSql()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CorruptFirstPageIsDiscardedAndFilledAgainFromPostgreSql(bool nestedNull)
     {
         var playerId = Guid.NewGuid();
         await _fixture.RegisterPlayersAsync(playerId);
@@ -504,7 +506,10 @@ public sealed class PlayerGrainTests(OrleansTestClusterFixture fixture)
         await using var redis = await ConnectionMultiplexer.ConnectAsync(_fixture.RedisConnectionString);
         var database = redis.GetDatabase();
         var cacheKey = $"coopgame:test:player-progression:v1:{playerId:N}";
-        await database.HashSetAsync(cacheKey, "first:20", "{not-valid-json");
+        var corruptJson = nestedNull
+            ? $"{{\"schemaVersion\":2,\"playerId\":\"{playerId}\",\"pageSize\":20,\"result\":null}}"
+            : "{not-valid-json";
+        await database.HashSetAsync(cacheKey, "first:20", corruptJson);
 
         var result = await player.GetProgressionPageAsync(
             new GetPlayerProgressionPageQuery(PageSize: 20, ContinuationToken: null));
@@ -513,7 +518,7 @@ public sealed class PlayerGrainTests(OrleansTestClusterFixture fixture)
         Assert.Equal(PlayerProgressionQueryError.None, result.Error);
         Assert.Equal(520, result.Gold);
         Assert.False(repairedJson.IsNullOrEmpty);
-        Assert.NotEqual("{not-valid-json", repairedJson.ToString());
+        Assert.NotEqual(corruptJson, repairedJson.ToString());
     }
 
     [Fact]

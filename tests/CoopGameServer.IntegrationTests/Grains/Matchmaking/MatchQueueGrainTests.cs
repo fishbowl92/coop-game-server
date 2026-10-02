@@ -40,7 +40,7 @@ public sealed class MatchQueueGrainTests(OrleansTestClusterFixture fixture)
         var queue = GetQueue();
         var threePlayerParty = CreatePreformedEntry(memberCount: 3);
         var twoPlayerParty = CreatePreformedEntry(memberCount: 2);
-        var soloPlayer = CreateSoloEntry();
+        var soloPlayer = await CreateSoloEntryAsync();
 
         await queue.EnqueueAsync(threePlayerParty);
         await queue.EnqueueAsync(twoPlayerParty);
@@ -100,7 +100,7 @@ public sealed class MatchQueueGrainTests(OrleansTestClusterFixture fixture)
     {
         var queue = GetQueue();
         var requestId = Guid.NewGuid();
-        var firstRequest = CreateSoloEntry(requestId: requestId);
+        var firstRequest = await CreateSoloEntryAsync(requestId: requestId);
         var changedRequest = CreatePreformedEntry(memberCount: 2, requestId: requestId);
 
         await queue.EnqueueAsync(firstRequest);
@@ -215,7 +215,7 @@ public sealed class MatchQueueGrainTests(OrleansTestClusterFixture fixture)
     {
         var queue = GetQueue();
         var threePlayerParty = CreatePreformedEntry(memberCount: 3);
-        var soloPlayer = CreateSoloEntry();
+        var soloPlayer = await CreateSoloEntryAsync();
         var threePlayerTicket = Assert.IsType<MatchQueueTicket>((await queue.EnqueueAsync(threePlayerParty)).Ticket);
 
         // Orleans는 두 호출을 같은 MatchQueueGrain 안에서 순차 처리하지만 어느 요청이 먼저 도착할지는 보장하지 않습니다.
@@ -255,7 +255,7 @@ public sealed class MatchQueueGrainTests(OrleansTestClusterFixture fixture)
         var secondQueue = GetQueue();
         var sharedRequestId = Guid.NewGuid();
         var firstEntry = CreatePreformedEntry(memberCount: 2) with { RequestId = sharedRequestId };
-        var secondEntry = CreateSoloEntry() with { RequestId = sharedRequestId };
+        var secondEntry = await CreateSoloEntryAsync(requestId: sharedRequestId);
 
         var firstResult = await firstQueue.EnqueueAsync(firstEntry);
         var secondResult = await secondQueue.EnqueueAsync(secondEntry);
@@ -294,7 +294,7 @@ public sealed class MatchQueueGrainTests(OrleansTestClusterFixture fixture)
         var queueKey = CreateQueueKey();
         var queue = GetQueue(queueKey);
         var party = CreatePreformedEntry(memberCount: 3);
-        var soloPlayer = CreateSoloEntry();
+        var soloPlayer = await CreateSoloEntryAsync();
         var partyResult = await queue.EnqueueAsync(party);
         var matchResult = await queue.EnqueueAsync(soloPlayer);
         var match = Assert.IsType<MatchAssignment>(matchResult.Match);
@@ -325,7 +325,7 @@ public sealed class MatchQueueGrainTests(OrleansTestClusterFixture fixture)
     {
         var queueKey = CreateQueueKey();
         var queue = GetQueue(queueKey);
-        var soloRequest = CreateSoloEntry();
+        var soloRequest = await CreateSoloEntryAsync();
         var queuedTicket = Assert.IsType<MatchQueueTicket>((await queue.EnqueueAsync(soloRequest)).Ticket);
 
         await using var gameDbContext = _fixture.CreateDbContext();
@@ -377,11 +377,12 @@ public sealed class MatchQueueGrainTests(OrleansTestClusterFixture fixture)
     }
 
     /// <summary>인증된 플레이어 한 명만 포함하는 솔로 대기 요청을 만듭니다.</summary>
-    private static MatchQueueEntryRequest CreateSoloEntry(
+    private async Task<MatchQueueEntryRequest> CreateSoloEntryAsync(
         Guid? requestId = null,
         Guid? playerId = null)
     {
         var soloPlayerId = playerId ?? Guid.NewGuid();
+        await _fixture.RegisterPlayersAsync(soloPlayerId);
 
         return new MatchQueueEntryRequest(
             requestId ?? Guid.NewGuid(),

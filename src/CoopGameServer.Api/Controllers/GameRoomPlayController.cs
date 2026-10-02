@@ -10,14 +10,14 @@ namespace CoopGameServer.Api.Controllers;
 [ApiController, Authorize, Route("api/game-rooms/{roomId:guid}")]
 public sealed class GameRoomPlayController(IGrainFactory grains) : ControllerBase
 {
-    [HttpGet("play-state")]
+    [HttpGet("play-state"), EnableRateLimiting("room-read")]
     public async Task<IActionResult> GetState(Guid roomId)
     {
         if (!User.TryGetPlayerId(out var playerId)) return Unauthorized();
         var result = await grains.GetGrain<IGameRoomGrain>(roomId).GetPlayerViewAsync(playerId);
         return result.Error == "None" ? Ok(result) : Error(result.Error);
     }
-    [HttpPost("connect")]
+    [HttpPost("connect"), EnableRateLimiting("room-command")]
     public Task<IActionResult> Connect(Guid roomId, ConnectRoomRequest request) => Connection(roomId,
         new(request.RequestId, default, GameRoomConnectionAction.Connect));
 
@@ -29,18 +29,18 @@ public sealed class GameRoomPlayController(IGrainFactory grains) : ControllerBas
     public Task<IActionResult> Heartbeat(Guid roomId, RoomCredentialRequest request) => Connection(roomId,
         new(Guid.Empty, default, GameRoomConnectionAction.Heartbeat, request.ConnectionId, request.Generation));
 
-    [HttpPost("disconnect")]
+    [HttpPost("disconnect"), EnableRateLimiting("room-command")]
     public Task<IActionResult> Disconnect(Guid roomId, RoomSessionCommandRequest request) => Connection(roomId,
         new(request.RequestId, default, GameRoomConnectionAction.Disconnect, request.ConnectionId, request.Generation));
 
-    [HttpPost("start-combat")]
+    [HttpPost("start-combat"), EnableRateLimiting("room-command")]
     public Task<IActionResult> StartCombat(Guid roomId, RoomSessionCommandRequest request) => Connection(roomId,
         new(request.RequestId, default, GameRoomConnectionAction.StartCombat, request.ConnectionId, request.Generation));
 
-    [HttpPost("basic-attack")]
+    [HttpPost("basic-attack"), EnableRateLimiting("room-command")]
     public Task<IActionResult> Attack(Guid roomId, RoomAttackRequest request) => Combat(roomId, request, CombatActionKind.BasicAttack);
 
-    [HttpPost("use-skill")]
+    [HttpPost("use-skill"), EnableRateLimiting("room-command")]
     public Task<IActionResult> Skill(Guid roomId, RoomAttackRequest request) => Combat(roomId, request, CombatActionKind.UseSkill);
 
     private async Task<IActionResult> Connection(Guid roomId, GameRoomConnectionCommand command)

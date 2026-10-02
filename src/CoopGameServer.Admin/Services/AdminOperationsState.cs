@@ -79,7 +79,8 @@ public sealed class AdminOperationsState(
         return RunAsync(async () =>
         {
             RequiresRefresh = true;
-            var player = Selection?.Player ?? await api.LookupPlayerAsync(LastReceipt!.PlayerId.ToString());
+            // ID를 유지하되 프로필도 다시 조회해 닉네임 변경 전의 선택 정보를 재사용하지 않습니다.
+            var player = await api.LookupPlayerAsync((Selection?.Player.PlayerId ?? LastReceipt!.PlayerId).ToString());
             Selection = await ReadSelectionAsync(player);
             RequiresRefresh = false;
             SetMessage("플레이어 정보와 보상 이력을 새로 조회했습니다.", "success");
@@ -103,7 +104,7 @@ public sealed class AdminOperationsState(
             }
             catch (AdminApiException exception) when (!isRetry && IsDefiniteRejection(exception.StatusCode))
             {
-                // 최초 400/401/403/404는 이 API에서 영구 변경 전 거부입니다. 입력을 수정할 수 있습니다.
+                // 최초 400/401/403/404/422는 영구 변경이 없는 거부입니다. 입력을 수정할 수 있습니다.
                 // 이전 응답을 잃은 재시도의 거부는 최초 적용 여부를 증명하지 못하므로 해제하지 않습니다.
                 reward.ReleaseRejectedSubmission();
                 throw;
@@ -125,7 +126,7 @@ public sealed class AdminOperationsState(
 
             try
             {
-                var player = Selection?.Player ?? await api.LookupPlayerAsync(pending.PlayerId.ToString());
+                var player = await api.LookupPlayerAsync(pending.PlayerId.ToString());
                 Selection = await ReadSelectionAsync(player);
                 RequiresRefresh = false;
             }
@@ -174,7 +175,8 @@ public sealed class AdminOperationsState(
     }
 
     private static bool IsDefiniteRejection(HttpStatusCode statusCode) => statusCode is
-        HttpStatusCode.BadRequest or HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden or HttpStatusCode.NotFound;
+        HttpStatusCode.BadRequest or HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden or HttpStatusCode.NotFound or
+        HttpStatusCode.UnprocessableEntity;
 
     private void SetMessage(string message, string style)
     {

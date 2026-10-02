@@ -14,6 +14,8 @@ public static class GameRoomRateLimits
             options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
             Add(options, "room-heartbeat", 2, TimeSpan.FromSeconds(1));
             Add(options, "room-reconnect", 5, TimeSpan.FromMinutes(1));
+            Add(options, "room-command", 30, TimeSpan.FromSeconds(1));
+            Add(options, "room-read", 30, TimeSpan.FromSeconds(1));
             options.OnRejected = (context, _) =>
             {
                 if (context.Lease.TryGetMetadata(MetadataName.RetryAfter, out var retry))
@@ -29,9 +31,9 @@ public static class GameRoomRateLimits
         options.AddPolicy(name, context =>
         {
             context.User.TryGetPlayerId(out var player);
-            var room = context.Request.RouteValues["roomId"]?.ToString();
-            // 연결 ID만 바꿔 제한을 회피하지 못하도록 인증된 본인과 방으로 구분합니다.
-            return RateLimitPartition.GetFixedWindowLimiter($"{player}:{room}", _ => new FixedWindowRateLimiterOptions
+            // 방 ID·GUID 표기·연결 ID를 바꿔도 같은 인증 주체는 같은 예산을 사용합니다.
+            // 임의의 방마다 제한기 인스턴스를 만들지 않아 존재하지 않는 방으로 분할을 늘릴 수도 없습니다.
+            return RateLimitPartition.GetFixedWindowLimiter(player, _ => new FixedWindowRateLimiterOptions
             { PermitLimit = count, Window = window, QueueLimit = 0, AutoReplenishment = true });
         });
     }

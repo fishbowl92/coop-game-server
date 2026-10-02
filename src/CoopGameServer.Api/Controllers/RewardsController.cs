@@ -102,6 +102,12 @@ public sealed class RewardsController : ControllerBase
                 statusCode: StatusCodes.Status400BadRequest),
             PlayerRewardCommandError.PlayerNotFound => NotFound(),
             PlayerRewardCommandError.InvalidAdministrator => Forbid(),
+            PlayerRewardCommandError.CapacityExceeded => UnprocessableEntity(new ProblemDetails
+            {
+                Title = "Reward capacity exceeded.",
+                Detail = "The reward was not applied because the resulting balance or item quantity exceeds its limit.",
+                Status = StatusCodes.Status422UnprocessableEntity,
+            }),
             PlayerRewardCommandError.IdempotencyConflict => Conflict(new ProblemDetails
             {
                 Title = "Idempotency key was reused with different reward data.",

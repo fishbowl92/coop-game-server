@@ -1,8 +1,6 @@
 using CoopGameServer.Contracts.Matchmaking;
 using CoopGameServer.GrainContracts.Matchmaking;
 using CoopGameServer.GrainContracts.Parties;
-using CoopGameServer.Persistence;
-using Microsoft.EntityFrameworkCore;
 
 namespace CoopGameServer.Api.Application.Matchmaking;
 
@@ -14,7 +12,7 @@ namespace CoopGameServer.Api.Application.Matchmaking;
 /// 사전 구성 파티는 PartyGrain의 최신 스냅샷을, 솔로 신청은 인증 토큰의 Player ID를 사용해
 /// 신뢰할 수 있는 내부 MatchQueueEntryRequest를 만듭니다.
 /// </remarks>
-public sealed class MatchmakingService(IGrainFactory grainFactory, GameDbContext gameDbContext)
+public sealed class MatchmakingService(IGrainFactory grainFactory)
 {
     /// <summary>인증된 플레이어 한 명을 파티 없는 솔로 티켓으로 등록합니다.</summary>
     public async Task<MatchmakingApplicationResult> EnqueueSoloAsync(
@@ -38,16 +36,9 @@ public sealed class MatchmakingService(IGrainFactory grainFactory, GameDbContext
             return QueueFailure(MatchQueueCommandError.InvalidLeaderPlayerId);
         }
 
-        // 사전 구성 파티에 남아 있는 플레이어가 동시에 솔로로 신청하면
-        // 게임 종료 뒤 돌아갈 로비 상태가 모호해지므로 HTTP 경계에서 차단합니다.
-        var belongsToParty = await gameDbContext.PartyMembers
-            .AsNoTracking()
-            .AnyAsync(member => member.PlayerId == playerId, cancellationToken);
-        if (belongsToParty)
-        {
-            return Failure(MatchmakingApplicationError.SoloPlayerAlreadyInParty);
-        }
-
+        // 파티 소속·솔로 참가 경쟁은 Queue의 DB 잠금 안에서 판정합니다.
+        // HTTP 사전 조회로 오래된 성공 요청의 재생을 차단하지 않습니다.
+        cancellationToken.ThrowIfCancellationRequested();
         var request = new MatchQueueEntryRequest(
             requestId,
             MatchQueueEntryKind.SoloPlayer,
@@ -58,7 +49,9 @@ public sealed class MatchmakingService(IGrainFactory grainFactory, GameDbContext
             .EnqueueAsync(request)
             .WaitAsync(cancellationToken);
 
-        return Success(queueResult);
+        return queueResult.Error == MatchQueueCommandError.SoloPlayerAlreadyInParty
+            ? Failure(MatchmakingApplicationError.SoloPlayerAlreadyInParty)
+            : Success(queueResult);
     }
 
     /// <summary>

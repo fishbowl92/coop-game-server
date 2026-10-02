@@ -190,7 +190,7 @@ public sealed class DurableRecoveryTests(OrleansTestClusterFixture fixture) : ID
             $"PERFORM pg_advisory_xact_lock({gate}); RETURN NEW;");
         using var cancellation = new CancellationTokenSource();
         await using var context = fixture.CreateDbContext();
-        var service = new MatchmakingService(fixture.Cluster.GrainFactory, context);
+        var service = new MatchmakingService(fixture.Cluster.GrainFactory);
         var pending = service.EnqueuePartyAsync(request.QueueKey, request.TargetId, request.RequestId,
             request.RequesterPlayerId, false, cancellation.Token);
         try

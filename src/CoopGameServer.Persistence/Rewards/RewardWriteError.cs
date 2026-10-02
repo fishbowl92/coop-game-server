@@ -14,4 +14,7 @@ public enum RewardWriteError
 
     /// <summary>지급을 요청한 Account가 현재 Administrator 역할이 아닙니다.</summary>
     InvalidAdministrator = 3,
+
+    /// <summary>지급 후 골드 또는 아이템 수량이 저장 가능한 정수 범위를 넘습니다.</summary>
+    CapacityExceeded = 4,
 }

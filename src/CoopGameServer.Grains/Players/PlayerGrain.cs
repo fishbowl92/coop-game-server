@@ -70,6 +70,7 @@ public sealed class PlayerGrain : Grain, IPlayerGrain
             RewardWriteError.PlayerNotFound => Rejected(PlayerRewardCommandError.PlayerNotFound),
             RewardWriteError.IdempotencyConflict => Rejected(PlayerRewardCommandError.IdempotencyConflict),
             RewardWriteError.InvalidAdministrator => Rejected(PlayerRewardCommandError.InvalidAdministrator),
+            RewardWriteError.CapacityExceeded => Rejected(PlayerRewardCommandError.CapacityExceeded),
             _ => throw new InvalidOperationException(
                 $"지원하지 않는 보상 쓰기 오류입니다: {writeResult.Error}"),
         };
@@ -128,6 +129,7 @@ public sealed class PlayerGrain : Grain, IPlayerGrain
             RewardWriteError.PlayerNotFound => Rejected(PlayerRewardCommandError.PlayerNotFound),
             RewardWriteError.IdempotencyConflict => Rejected(PlayerRewardCommandError.IdempotencyConflict),
             RewardWriteError.InvalidAdministrator => Rejected(PlayerRewardCommandError.InvalidAdministrator),
+            RewardWriteError.CapacityExceeded => Rejected(PlayerRewardCommandError.CapacityExceeded),
             _ => throw new InvalidOperationException(
                 $"지원하지 않는 보상 쓰기 오류입니다: {writeResult.Error}"),
         };

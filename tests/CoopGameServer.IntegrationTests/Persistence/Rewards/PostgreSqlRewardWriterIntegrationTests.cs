@@ -287,8 +287,9 @@ public sealed class PostgreSqlRewardWriterIntegrationTests : IAsyncLifetime
             null,
             "force-wallet-overflow");
 
-        await Assert.ThrowsAsync<OverflowException>(
-            () => _rewardWriter.WriteAsync(command));
+        var result = await _rewardWriter.WriteAsync(command);
+        Assert.Equal(RewardWriteError.CapacityExceeded, result.Error);
+        Assert.Null(result.Receipt);
 
         await using var assertionDbContext = _databaseFixture.CreateDbContext();
         var wallet = await assertionDbContext.PlayerWallets.SingleAsync(entity => entity.PlayerId == player.Id);

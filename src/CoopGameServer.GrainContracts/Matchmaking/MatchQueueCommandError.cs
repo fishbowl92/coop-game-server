@@ -54,4 +54,10 @@ public enum MatchQueueCommandError
 
     /// <summary>게임이 끝나 이미 완료 상태가 된 티켓은 대기 취소할 수 없습니다.</summary>
     TicketAlreadyCompleted = 16,
+
+    /// <summary>파티에 소속된 플레이어는 솔로로 등록할 수 없습니다.</summary>
+    SoloPlayerAlreadyInParty = 17,
+
+    /// <summary>등록할 플레이어가 영속 원본에 없습니다.</summary>
+    PlayerNotFound = 18,
 }

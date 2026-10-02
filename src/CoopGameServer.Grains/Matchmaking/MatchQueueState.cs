@@ -73,6 +73,10 @@ internal sealed class MatchQueueState
             .ToArray();
     }
 
+    /// <summary>영속 원본 검사에서 거절된 새 등록의 결과만 저장합니다. 티켓과 배정은 만들지 않습니다.</summary>
+    internal MatchQueueCommandResult RejectEnqueue(MatchQueueEntryRequest request, MatchQueueCommandError error) =>
+        Store(request, Failure(ticketId: null, error));
+
     /// <summary>사전 구성 파티 또는 솔로 참가자를 하나의 대기 티켓으로 등록합니다.</summary>
     internal MatchQueueCommandResult Enqueue(string queueKey, MatchQueueEntryRequest request)
     {

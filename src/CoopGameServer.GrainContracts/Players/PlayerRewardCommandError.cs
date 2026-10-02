@@ -21,4 +21,7 @@ public enum PlayerRewardCommandError
 
     /// <summary>지급을 요청한 Account가 현재 Administrator 역할이 아닙니다.</summary>
     InvalidAdministrator = 5,
+
+    /// <summary>지급 후 골드 또는 아이템의 보유 한도를 초과합니다. 이 요청은 적용하지 않습니다.</summary>
+    CapacityExceeded = 6,
 }

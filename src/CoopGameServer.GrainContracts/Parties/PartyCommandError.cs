@@ -74,4 +74,7 @@ public enum PartyCommandError
 
     /// <summary>현재 참가 중인 방과 다른 roomId로 게임 완료를 요청했습니다.</summary>
     RoomIdMismatch = 21,
+
+    /// <summary>솔로 티켓으로 대기 또는 게임 중이어서 새 파티에 참가할 수 없습니다.</summary>
+    PlayerAlreadyInMatchmaking = 22,
 }

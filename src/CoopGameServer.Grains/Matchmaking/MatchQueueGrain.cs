@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using CoopGameServer.GrainContracts.GameRooms;
 using CoopGameServer.GrainContracts.Matchmaking;
+using CoopGameServer.Grains.Persistence;
 using CoopGameServer.Persistence;
 using CoopGameServer.Persistence.Matchmaking;
 using Microsoft.EntityFrameworkCore;
@@ -73,7 +74,7 @@ public sealed class MatchQueueGrain(IDbContextFactory<GameDbContext> dbContextFa
     /// <inheritdoc />
     public async Task<MatchQueueCommandResult> EnqueueAsync(MatchQueueEntryRequest request)
     {
-        var result = await ExecuteCommandAsync(state => state.Enqueue(this.GetPrimaryKeyString(), request));
+        var result = await ExecuteCommandAsync(state => state.Enqueue(this.GetPrimaryKeyString(), request), request);
 
         if (result.Match is { } match)
         {
@@ -139,13 +140,32 @@ public sealed class MatchQueueGrain(IDbContextFactory<GameDbContext> dbContextFa
     /// 복사한 상태에 명령을 적용하고, DB 커밋이 성공했을 때만 실제 Grain 상태를 교체합니다.
     /// </summary>
     private async Task<MatchQueueCommandResult> ExecuteCommandAsync(
-        Func<MatchQueueState, MatchQueueCommandResult> executeCommand)
+        Func<MatchQueueState, MatchQueueCommandResult> executeCommand,
+        MatchQueueEntryRequest? enqueueRequest = null)
     {
         var candidateState = _state.Clone();
         var result = executeCommand(candidateState);
 
+        // 최초 결과의 재생은 현재 파티 소속으로 재판정하거나 대기열 전체를 다시 저장하지 않습니다.
+        if (result.IsReplay) return result;
+
         await using var gameDbContext = await dbContextFactory.CreateDbContextAsync();
         await using var transaction = await gameDbContext.Database.BeginTransactionAsync();
+
+        if (result.Error == MatchQueueCommandError.None && enqueueRequest is { EntryKind: MatchQueueEntryKind.SoloPlayer } solo)
+        {
+            var exists = await PlayerParticipationGuard.LockAsync(gameDbContext, solo.LeaderPlayerId);
+            var error = !exists ? MatchQueueCommandError.PlayerNotFound :
+                await gameDbContext.PartyMembers.AnyAsync(member => member.PlayerId == solo.LeaderPlayerId)
+                    ? MatchQueueCommandError.SoloPlayerAlreadyInParty :
+                await PlayerParticipationGuard.HasActiveSoloTicketAsync(gameDbContext, solo.LeaderPlayerId)
+                    ? MatchQueueCommandError.PlayerAlreadyQueued : MatchQueueCommandError.None;
+            if (error != MatchQueueCommandError.None)
+            {
+                candidateState = _state.Clone();
+                result = candidateState.RejectEnqueue(solo, error);
+            }
+        }
 
         // 같은 queueKey Grain은 Orleans가 순차 실행하지만, DB에도 한 번에 완성된 상태만 보이도록 트랜잭션을 사용합니다.
         await SynchronizeStateAsync(gameDbContext, this.GetPrimaryKeyString(), candidateState);

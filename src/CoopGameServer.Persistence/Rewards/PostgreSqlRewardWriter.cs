@@ -195,6 +195,13 @@ public sealed class PostgreSqlRewardWriter : IRewardWriter
 
             return ToSuccessResult(requestedRewardAudit, isReplay: false);
         }
+        catch (OverflowException)
+        {
+            // checked 덧셈의 한도 초과는 재시도로 해결할 기반시설 장애가 아닙니다.
+            // 먼저 저장했던 감사 행과 앞서 변경한 재화도 함께 되돌려 부분 지급을 막습니다.
+            await transaction.RollbackAsync(CancellationToken.None);
+            return ToErrorResult(RewardWriteError.CapacityExceeded);
+        }
         catch (DbUpdateException exception) when (IsDuplicateRequestId(exception))
         {
             // 경쟁 요청이 같은 키를 먼저 Commit했으면 이번 변경을 버리고 승자의 결과를 다시 읽습니다.
@@ -354,6 +361,7 @@ public sealed class PostgreSqlRewardWriter : IRewardWriter
             RewardWriteError.PlayerNotFound => "player_not_found",
             RewardWriteError.IdempotencyConflict => "idempotency_conflict",
             RewardWriteError.InvalidAdministrator => "invalid_administrator",
+            RewardWriteError.CapacityExceeded => "capacity_exceeded",
             _ => "unknown_error",
         };
     }

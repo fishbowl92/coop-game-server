@@ -84,6 +84,31 @@ public sealed class GameRoomPlayHttpTests(OrleansTestClusterFixture fixture)
         finally { clock.Reset(); }
     }
 
+    [Fact]
+    public async Task ChangingRoomIdsCannotBypassPlayerRateBudget()
+    {
+        await using var database = fixture.CreateDbContext();
+        await using var factory = new ApiFactory(fixture, database.Database.GetConnectionString()!);
+        using var client = factory.CreateClient(new WebApplicationFactoryClientOptions { BaseAddress = new Uri("https://localhost") });
+        Authenticate(client, Guid.NewGuid());
+        // 방마다 GUID 표기와 값을 바꿔도 한 플레이어의 분당 재접속 5회 한도를 공유합니다.
+        var responses = await Task.WhenAll(Enumerable.Range(0, 12).Select(index => client.PostAsJsonAsync(
+            $"/api/game-rooms/{Guid.NewGuid().ToString(index % 2 == 0 ? "D" : "N")}/reconnect",
+            new ReconnectRoomRequest(Guid.NewGuid(), 1))));
+        try
+        {
+            Assert.Equal(7, responses.Count(x => x.StatusCode == HttpStatusCode.TooManyRequests));
+            Assert.All(responses.Where(x => x.StatusCode == HttpStatusCode.TooManyRequests), x => Assert.NotNull(x.Headers.RetryAfter));
+            Authenticate(client, Guid.NewGuid());
+            using var otherPlayer = await client.PostAsJsonAsync($"/api/game-rooms/{Guid.NewGuid()}/reconnect", new ReconnectRoomRequest(Guid.NewGuid(), 1));
+            Assert.Equal(HttpStatusCode.NotFound, otherPlayer.StatusCode);
+        }
+        finally
+        {
+            foreach (var response in responses) response.Dispose();
+        }
+    }
+
     private static void Authenticate(HttpClient client, Guid player)
     {
         var token = new JwtSecurityToken("http-tests", "http-tests", [new Claim(JwtRegisteredClaimNames.Sub, player.ToString())],

@@ -244,7 +244,7 @@ public sealed class MatchmakingFlowControllerTests(OrleansTestClusterFixture fix
         Guid playerId,
         bool isAdministrator = false)
     {
-        var service = new MatchmakingService(fixture.Cluster.GrainFactory, gameDbContext);
+        var service = new MatchmakingService(fixture.Cluster.GrainFactory);
         var controller = new MatchmakingController(service);
         SetCurrentPlayer(controller, playerId, isAdministrator);
         return controller;

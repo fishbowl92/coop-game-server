@@ -27,6 +27,41 @@ namespace CoopGameServer.IntegrationTests.Controllers;
 [Collection(OrleansTestClusterSuite.Name)]
 public sealed class AdminOperationsHttpTests(OrleansTestClusterFixture fixture)
 {
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task CapacityExceededReturns422AndRollsBackBothAuditsAndBalances(bool goldOverflow)
+    {
+        var playerId = Guid.NewGuid();
+        var adminPlayerId = Guid.NewGuid();
+        var adminId = Guid.NewGuid();
+        await fixture.RegisterPlayersAsync(playerId, adminPlayerId);
+        await SeedAdministratorAsync(adminId, adminPlayerId, $"cap_{adminId:N}"[..20]);
+        await using var database = fixture.CreateDbContext();
+        await using var factory = new ApiFactory(fixture, database.Database.GetConnectionString()!);
+        using var client = factory.CreateClient(new WebApplicationFactoryClientOptions { BaseAddress = new Uri("https://localhost") });
+        Authenticate(client, adminPlayerId, adminId, AccountRole.Administrator);
+        var path = $"/api/players/{playerId}/rewards";
+        var seed = new GrantRewardRequest(Guid.NewGuid(), goldOverflow ? long.MaxValue : 10, 1001,
+            goldOverflow ? 1 : int.MaxValue, "capacity-seed");
+        using var applied = await client.PostAsJsonAsync(path, seed);
+        Assert.Equal(HttpStatusCode.Created, applied.StatusCode);
+        var overflow = new GrantRewardRequest(Guid.NewGuid(), 1, 1001, 1, "capacity-overflow");
+        for (var attempt = 0; attempt < 2; attempt++)
+        {
+            using var rejected = await client.PostAsJsonAsync(path, overflow);
+            Assert.Equal(HttpStatusCode.UnprocessableEntity, rejected.StatusCode);
+        }
+
+        // 아이템 초과 전에 계산한 골드와 이미 INSERT한 두 감사 행도 모두 롤백돼야 합니다.
+        Assert.Equal(seed.GoldAmount, (await database.PlayerWallets.SingleAsync(x => x.PlayerId == playerId)).Gold);
+        Assert.Equal(seed.ItemQuantity, (await database.InventoryItems.SingleAsync(x => x.PlayerId == playerId)).Quantity);
+        Assert.Equal(1, await database.RewardAudits.CountAsync(x => x.PlayerId == playerId));
+        Assert.False(await database.AdminAudits.AnyAsync(x => x.RequestId == overflow.RequestId));
+        using var replay = await client.PostAsJsonAsync(path, seed);
+        Assert.Equal(HttpStatusCode.OK, replay.StatusCode);
+    }
+
     private const string TestIssuer = "admin-http-tests";
     private const string TestKey = "isolated-admin-http-signing-key-2026";
 

@@ -13,7 +13,8 @@ namespace CoopGameServer.Grains.Players.Caching;
 /// </summary>
 public sealed class RedisPlayerProgressionCache : IPlayerProgressionCache
 {
-    private const int SchemaVersion = 1;
+    // v1에는 값별 만료 시각이 없으므로 v2 읽기에서 폐기하고 PostgreSQL로 다시 채웁니다.
+    private const int SchemaVersion = 2;
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
     private static readonly Action<ILogger, Guid, Exception?> InvalidJsonLog =
         LoggerMessage.Define<Guid>(
@@ -44,11 +45,13 @@ public sealed class RedisPlayerProgressionCache : IPlayerProgressionCache
     private readonly IDatabase _database;
     private readonly PlayerProgressionCacheOptions _options;
     private readonly ILogger<RedisPlayerProgressionCache> _logger;
+    private readonly TimeProvider _timeProvider;
 
     public RedisPlayerProgressionCache(
         IConnectionMultiplexer connectionMultiplexer,
         PlayerProgressionCacheOptions options,
-        ILogger<RedisPlayerProgressionCache> logger)
+        ILogger<RedisPlayerProgressionCache> logger,
+        TimeProvider? timeProvider = null)
     {
         ArgumentNullException.ThrowIfNull(connectionMultiplexer);
         ArgumentNullException.ThrowIfNull(options);
@@ -58,6 +61,7 @@ public sealed class RedisPlayerProgressionCache : IPlayerProgressionCache
         _database = connectionMultiplexer.GetDatabase();
         _options = options;
         _logger = logger;
+        _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
     public async Task<PlayerProgressionCacheReadResult> ReadFirstPageAsync(Guid playerId, int pageSize)
@@ -99,15 +103,28 @@ public sealed class RedisPlayerProgressionCache : IPlayerProgressionCache
                 payload.SchemaVersion != SchemaVersion ||
                 payload.PlayerId != playerId ||
                 payload.PageSize != pageSize ||
+                payload.Result is null ||
+                payload.ExpiresAtUtc == default ||
                 payload.Result.Error != PlayerProgressionQueryError.None ||
                 payload.Result.PlayerId != playerId ||
                 payload.Result.Nickname is null ||
-                payload.Result.Items is null)
+                payload.Result.Items is null ||
+                payload.Result.Gold < 0 ||
+                payload.Result.Items.Any(item => item is null || item.ItemId <= 0 || item.Quantity <= 0))
             {
                 activityResult = "corrupt";
                 await DeleteCorruptKeyAsync(playerId);
                 PlayerProgressionCacheMetrics.RecordRequest("corrupt");
                 return new(PlayerProgressionCacheReadStatus.Corrupt, null);
+            }
+
+            // 다른 페이지 크기의 저장이 Hash 키 TTL을 늘려도 이 값의 절대 만료는 연장되지 않습니다.
+            // 공유 키를 삭제하지 않아 아직 유효한 다른 페이지의 캐시를 보존합니다.
+            if (payload.ExpiresAtUtc <= _timeProvider.GetUtcNow())
+            {
+                activityResult = "miss";
+                PlayerProgressionCacheMetrics.RecordRequest("miss");
+                return new(PlayerProgressionCacheReadStatus.Miss, null);
             }
 
             activityResult = "hit";
@@ -151,13 +168,14 @@ public sealed class RedisPlayerProgressionCache : IPlayerProgressionCache
 
         try
         {
+            var ttl = CreateEntryTtl();
             var serialized = JsonSerializer.Serialize(
-                new CachedPlayerProgressionPage(SchemaVersion, playerId, pageSize, result),
+                new CachedPlayerProgressionPage(SchemaVersion, playerId, pageSize, result, _timeProvider.GetUtcNow() + ttl),
                 SerializerOptions);
             var key = BuildKey(playerId);
             var transaction = _database.CreateTransaction();
             var setTask = transaction.HashSetAsync(key, BuildField(pageSize), serialized);
-            var expireTask = transaction.KeyExpireAsync(key, CreateEntryTtl());
+            var expireTask = transaction.KeyExpireAsync(key, ttl);
             var committed = await transaction.ExecuteAsync().WaitAsync(_options.OperationTimeout);
 
             if (!committed)
@@ -250,5 +268,6 @@ public sealed class RedisPlayerProgressionCache : IPlayerProgressionCache
         int SchemaVersion,
         Guid PlayerId,
         int PageSize,
-        PlayerProgressionPageResult Result);
+        PlayerProgressionPageResult? Result,
+        DateTimeOffset ExpiresAtUtc);
 }

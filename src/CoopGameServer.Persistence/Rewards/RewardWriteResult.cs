@@ -2,8 +2,8 @@ namespace CoopGameServer.Persistence.Rewards;
 
 /// <summary>PostgreSQL 보상 쓰기의 처리 결과입니다.</summary>
 /// <remarks>
-/// 연결 끊김, 명령 시간 초과, 숫자 Overflow(오버플로, 표현 범위를 넘는 연산) 같은 장애는
-/// 업무 오류로 감추지 않고 예외로 전달합니다.
+/// 연결 끊김과 명령 시간 초과는 예외로 전달합니다. 재화의 정수 한도 초과는
+/// 전체 변경을 롤백한 CapacityExceeded 업무 거부로 전달합니다.
 /// 생성자를 숨기고 의미가 드러나는 Factory Method(팩터리 메서드, 올바른 객체 생성을 전담하는 메서드)만
 /// 제공하여 성공인데 영수증이 없거나, 실패인데 재생으로 표시되는 모순된 상태를 만들 수 없게 합니다.
 /// </remarks>
