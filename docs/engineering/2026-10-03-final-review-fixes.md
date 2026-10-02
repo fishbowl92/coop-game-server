@@ -123,5 +123,9 @@ Git에 포함하지 않는 실행 자료이므로 공개 자동 검증은 해당
 - 여러 Silo의 운영 구성, 공개 서버의 TLS(Transport Layer Security, 통신 암호화), 외부 비밀 관리, 운영 백업·복구, 지속 부하는 현재 단일 PC 포트폴리오의 검증 범위 밖이다.
 - [8주차 부하 기준선](../performance/week-08/README.md)은 2026-09-23 코드의 측정이다. 이번 코드의 성능 수치나 최적화·After 결과로 인용하지 않는다.
 
-커밋·푸시·같은 커밋의 CI(Continuous Integration, 지속적 통합)와 Notion 상태 동기화는
-게시 시점의 [작업 인계](../work/current.md)와 최종 결과 보고에서 구분하여 확인한다.
+## 게시 결과 — 2026-10-03
+
+- 코드·테스트·보고서: [`fa5b4ef`](https://github.com/fishbowl92/coop-game-server/commit/fa5b4ef2fee06b4b24cad0ad18b1577fe78dcac6), 커밋·`main` 푸시 완료.
+- 같은 코드 커밋의 [CI(Continuous Integration, 지속적 통합) 37039655073](https://github.com/fishbowl92/coop-game-server/actions/runs/37039655073): 복원·스타일·분석기·취약성 검사·Release 빌드·전체 테스트·네 이미지 빌드 모두 성공.
+- Notion: 대시보드·로드맵·캐시·관측성·공개 포트폴리오 다섯 페이지의 상태·근거를 수정하고 다시 조회했다. 수정 내용과 하위 페이지·데이터베이스 참조 보존을 확인했다.
+- 이후 보고서·[작업 인계](../work/current.md)를 정리하는 문서 커밋에는 애플리케이션·테스트 변경이 없다. 현재 원격 HEAD의 자동 검증 상태는 재개 시 다시 확인한다.
