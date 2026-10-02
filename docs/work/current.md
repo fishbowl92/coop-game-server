@@ -16,6 +16,7 @@ Updated: 2026-10-03 (Asia/Seoul). Snapshot, not live status. Follow [AGENTS.md](
 
 - The 2026-10-02 Notion review updated 19 existing pages while preserving child pages and learner answer/evaluation records.
 - On 2026-10-03, updated and fetched back five status pages: dashboard, roadmap, cache, observability and public portfolio. All targeted edits were present, and child page/database references were preserved. Closed the implemented review items, linked the final report and exact-code CI, retained evidence dates/limits, and corrected the API/Silo port labels.
+- The subsequent learning-center pass updated 26 existing pages and created three question pages. Week 0-9 notes, three shared concept documents, existing Week 0-6 model answers, four hubs and two guides now reflect public source `0fadf03`. Week 7-9 adds 30 core and 15 interview questions; the current bank covers all ten weeks. All 29 saved pages were fetched and compared, preserving existing learner records and child references. See the [learning-center review report](../engineering/2026-10-03-learning-center-review.md) for corrections, page links and evidence limits.
 - The [Notion development dashboard](https://www.notion.so/3a3ff0d6971781479c5efa99000a9860) holds current completion status. Other weekly notes retain their dated implementation/verification history; an older evidence footer is not a new test run.
 
 ## Evidence boundaries
@@ -31,7 +32,7 @@ Updated: 2026-10-03 (Asia/Seoul). Snapshot, not live status. Follow [AGENTS.md](
 
 ## Outstanding decisions and next action
 
-- No designated code correction, required local verification, or focused Notion status update remains from this review. Code was committed/pushed and its exact-code CI passed. Recheck volatile publication/service facts on the next task.
+- No designated code correction, required local verification, focused Notion status update, or learning-center document organization remains from this review. Code was committed/pushed and its exact-code CI passed. Learner understanding remains separate from document completion. Recheck volatile publication/service facts on the next task.
 - Record and review the 3-5 minute video separately, then link an actual file or public URL. The script alone is not a completed recording.
 - Multi-Silo membership, production TLS, external secret management, backup/recovery, and sustained operational load remain outside the verified local portfolio environment.
 - Preserve the pre-existing untracked `CoopGameServer/` review-data directory and existing Docker data. Cleanup is not required to continue.
